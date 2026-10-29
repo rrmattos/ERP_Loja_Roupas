@@ -1,0 +1,45 @@
+# =============================================================================
+# SNIPPET PARA ADICIONAR AO CADDYFILE JÁ EXISTENTE NA SUA VPS
+# Local na VPS: junto ao projeto do seu portfólio (onde roda o container caddy_proxy)
+# =============================================================================
+
+# Seu bloco atual do portfólio (MANTENHA COMO ESTÁ):
+rafaelrmattos.com, www.rafaelrmattos.com {
+    reverse_proxy app:8080
+}
+
+# NOVO BLOCO: Subdomínio do ERP Loja de Roupas
+# (Basta criar um registro DNS Tipo A 'erp' apontando para o IP da sua VPS DigitalOcean)
+erp.rafaelrmattos.com {
+    # Compressão automática para economizar banda e acelerar carregamento
+    encode zstd gzip
+
+    # Cabeçalhos extras de segurança no Edge (Caddy)
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    # Limite de tamanho de upload no proxy (1 MB máx para proteger disco/RAM da VPS)
+    request_body {
+        max_size 1MB
+    }
+
+    # Roteamento da API e Uploads para o container Node.js
+    handle /api/* {
+        reverse_proxy erp_node_api:4000
+    }
+
+    handle /uploads/* {
+        reverse_proxy erp_node_api:4000
+    }
+
+    # Roteamento do Front-end React (Nginx Alpine ultra-leve)
+    handle {
+        reverse_proxy erp_react_web:8080
+    }
+}
+

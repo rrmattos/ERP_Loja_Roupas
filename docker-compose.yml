@@ -1,0 +1,103 @@
+# =============================================================================
+# DOCKER COMPOSE - VPS (Homologação Portfólio / Produção)
+# Otimizado para Droplet 1 vCPU / 1 GB RAM coexistindo com portfolioweb + MySQL
+# =============================================================================
+services:
+  erp_db:
+    image: postgres:16-alpine
+    container_name: erp_postgres_db
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-erp_roupas}
+      POSTGRES_USER: ${DB_USER:-erp_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Defina DB_PASSWORD no arquivo .env}
+      TZ: America/Sao_Paulo
+    # Tuning explícito de memória para rodar com ~30-40MB de RAM na VPS de 1GB
+    command: >
+      postgres
+      -c shared_buffers=32MB
+      -c effective_cache_size=128MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=32MB
+      -c max_connections=25
+      -c log_min_duration_statement=500
+    volumes:
+      - erp_pg_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    # Segurança: NENHUMA porta exposta para a internet (sem "ports: 5432:5432")
+    networks:
+      - erp-internal-net
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+
+  erp_api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: erp_node_api
+    restart: always
+    environment:
+      NODE_ENV: ${NODE_ENV:-staging}
+      APP_MODE: ${APP_MODE:-portfolio_sandbox}
+      PORT: 4000
+      DATABASE_URL: postgresql://${DB_USER:-erp_user}:${DB_PASSWORD}@erp_db:5432/${DB_NAME:-erp_roupas}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Defina JWT_ACCESS_SECRET no .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Defina JWT_REFRESH_SECRET no .env}
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://erp.rafaelrmattos.com}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@rafaelrmattos.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Defina ADMIN_PASSWORD no .env}
+      UNITY_DEFAULT_API_KEY: ${UNITY_DEFAULT_API_KEY:?Defina UNITY_DEFAULT_API_KEY no .env}
+      SANDBOX_TTL_HOURS: ${SANDBOX_TTL_HOURS:-24}
+      SANDBOX_MAX_PRODUCTS: ${SANDBOX_MAX_PRODUCTS:-15}
+    volumes:
+      - erp_uploads:/app/uploads
+    depends_on:
+      erp_db:
+        condition: service_healthy
+    networks:
+      - erp-internal-net
+      - caddy-shared-net
+    deploy:
+      resources:
+        limits:
+          memory: 180M
+
+  erp_web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api/v1
+    container_name: erp_react_web
+    restart: always
+    depends_on:
+      - erp_api
+    networks:
+      - caddy-shared-net
+    deploy:
+      resources:
+        limits:
+          memory: 48M
+
+volumes:
+  erp_pg_data:
+  erp_uploads:
+
+networks:
+  # Rede isolada: Apenas a API conversa com o PostgreSQL
+  erp-internal-net:
+    driver: bridge
+    internal: true
+  # Rede compartilhada com o container caddy_proxy já existente na sua VPS
+  caddy-shared-net:
+    external: true
+    name: ${CADDY_DOCKER_NETWORK:-portfolioweb_app-net}
+

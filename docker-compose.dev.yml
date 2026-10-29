@@ -1,0 +1,29 @@
+# =============================================================================
+# DOCKER COMPOSE - DESENVOLVIMENTO LOCAL (Sua Máquina Windows)
+# Sobe apenas o PostgreSQL localmente em 127.0.0.1:5432 para rodar o Node/React com hot-reload
+# Uso: docker compose -f docker-compose.dev.yml up -d
+# =============================================================================
+services:
+  erp_db_dev:
+    image: postgres:16-alpine
+    container_name: erp_postgres_dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: erp_roupas_dev
+      POSTGRES_USER: erp_user
+      POSTGRES_PASSWORD: erp_dev_password_123
+      TZ: America/Sao_Paulo
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - erp_pg_dev_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erp_user -d erp_roupas_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  erp_pg_dev_data:
+
