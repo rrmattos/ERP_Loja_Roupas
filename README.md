@@ -1,6 +1,6 @@
-# Vértice Fashion ERP & Hub Unity 3D VR (SaaS Multi-Tenant)
+# Vértice Fashion ERP (SaaS Multi-Tenant)
 
-Sistema **ERP de Loja de Roupas** com arquitetura **Multi-Tenant (`tenant_id`)**, controle de grade de variações (**Tamanhos × Cores × SKU**), livro-razão de estoque transacional (**ACID / `SELECT ... FOR UPDATE`**) e API RESTful preparada para integração com e-commerce gamificado em realidade virtual no **Meta Quest (Unity 3D)**.
+Sistema **ERP de Loja de Roupas** com arquitetura **Multi-Tenant (`tenant_id`)**, controle de grade de variações (**Tamanhos × Cores × SKU**), livro-razão de estoque transacional (**ACID / `SELECT ... FOR UPDATE`**) e API RESTful preparada para integração futura com e-commerce gamificado em ambiente 3d **(Unity 3D)**.
 
 ---
 
@@ -68,7 +68,7 @@ Acesse no navegador: **`http://localhost:5173`**.
 
 ---
 
-## 🎮 Endpoints Preparados para o Motor Gráfico Unity 3D (Meta Quest)
+## 🎮 Endpoints Preparados para o Motor Gráfico Unity 3D
 
 As rotas abaixo utilizam os headers `X-Tenant-Slug` e `X-Unity-Api-Key` (exibidos no Dashboard do ERP):
 
