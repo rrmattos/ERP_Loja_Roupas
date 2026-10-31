@@ -56,6 +56,13 @@ END $$;
 CREATE TABLE IF NOT EXISTS tenants (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(120) NOT NULL,
+    legal_name VARCHAR(160) NULL,
+    document VARCHAR(30) NULL,
+    state_registration VARCHAR(40) NULL,
+    email VARCHAR(160) NULL,
+    phone VARCHAR(30) NULL,
+    address VARCHAR(255) NULL,
+    logo_url TEXT NULL,
     slug VARCHAR(80) NOT NULL UNIQUE,
     -- Controle de Portfólio / Homologação:
     -- is_demo: Loja pública compartilhada (acesso 1-clique, reseta a cada 24h)
@@ -82,6 +89,10 @@ CREATE TABLE IF NOT EXISTS users (
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     name VARCHAR(120) NOT NULL,
     email VARCHAR(160) NOT NULL,
+    phone VARCHAR(30) NULL,
+    document VARCHAR(30) NULL,
+    address VARCHAR(255) NULL,
+    job_title VARCHAR(80) NULL DEFAULT 'Vendedor(a)',
     password_hash VARCHAR(255) NOT NULL,
     role user_role NOT NULL DEFAULT 'ADMIN',
     active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -129,9 +140,10 @@ CREATE TABLE IF NOT EXISTS suppliers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     name VARCHAR(120) NOT NULL,
-    document VARCHAR(30) NULL, -- CNPJ / CPF opcional
+    document VARCHAR(30) NULL, -- CNPJ / CPF
     email VARCHAR(160) NULL,
     phone VARCHAR(30) NULL,
+    address VARCHAR(255) NULL,
     lead_time_days SMALLINT NOT NULL DEFAULT 7,
     active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -139,6 +151,21 @@ CREATE TABLE IF NOT EXISTS suppliers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_suppliers_tenant ON suppliers (tenant_id);
+
+CREATE TABLE IF NOT EXISTS customers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name VARCHAR(120) NOT NULL,
+    email VARCHAR(160) NULL,
+    phone VARCHAR(30) NULL,
+    document VARCHAR(30) NULL, -- CPF / CNPJ opcional
+    notes VARCHAR(255) NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_customers_tenant ON customers (tenant_id);
 
 -- =============================================================================
 -- 5. MATRIZ DE ATRIBUTOS DO VESTUÁRIO (TAMANHOS E CORES)
@@ -228,8 +255,14 @@ CREATE TABLE IF NOT EXISTS orders (
     order_number BIGSERIAL,
     channel sales_channel NOT NULL DEFAULT 'ERP_POS',
     status order_status NOT NULL DEFAULT 'PAID',
+    customer_id UUID NULL REFERENCES customers(id) ON DELETE SET NULL,
     customer_name VARCHAR(120) NULL,
     customer_email VARCHAR(160) NULL,
+    customer_document VARCHAR(30) NULL,
+    invoice_number VARCHAR(30) NULL,
+    invoice_series VARCHAR(10) NULL DEFAULT '001',
+    invoice_access_key VARCHAR(60) NULL,
+    invoice_issued_at TIMESTAMPTZ NULL,
     -- Metadados da sessão VR quando a compra vier do Meta Quest
     unity_session_id VARCHAR(120) NULL,
     -- Chave de idempotência para evitar cobrança/baixa duplicada se a rede oscilar
@@ -274,6 +307,8 @@ CREATE TABLE IF NOT EXISTS stock_movements (
     previous_stock INTEGER NOT NULL CHECK (previous_stock >= 0),
     new_stock INTEGER NOT NULL CHECK (new_stock >= 0),
     unit_cost NUMERIC(10, 2) NULL CHECK (unit_cost IS NULL OR unit_cost >= 0),
+    invoice_number VARCHAR(40) NULL,
+    tag_code VARCHAR(60) NULL,
     reason VARCHAR(255) NULL,
     reference_channel sales_channel NULL,
     created_by_user_id UUID NULL REFERENCES users(id) ON DELETE SET NULL,

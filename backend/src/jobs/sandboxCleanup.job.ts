@@ -106,9 +106,10 @@ export async function resetPublicDemoStore(): Promise<void> {
       const demoTenantId = demoRes.rows[0]?.id;
       if (!demoTenantId) return;
 
-      // Limpa movimentações, pedidos, variações, produtos, cores, tamanhos, fornecedores e categorias da Demo
+      // Limpa movimentações, pedidos, variações, produtos, cores, tamanhos, clientes, fornecedores e categorias da Demo
       await client.query(`DELETE FROM stock_movements WHERE tenant_id = $1`, [demoTenantId]);
       await client.query(`DELETE FROM orders WHERE tenant_id = $1`, [demoTenantId]);
+      await client.query(`DELETE FROM customers WHERE tenant_id = $1`, [demoTenantId]);
       await client.query(`DELETE FROM product_variants WHERE tenant_id = $1`, [demoTenantId]);
       await client.query(`DELETE FROM products WHERE tenant_id = $1`, [demoTenantId]);
       await client.query(`DELETE FROM colors WHERE tenant_id = $1`, [demoTenantId]);

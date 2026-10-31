@@ -24,6 +24,13 @@ interface AuthSessionResponse {
   tenant: {
     id: string;
     name: string;
+    legalName: string | null;
+    document: string | null;
+    stateRegistration: string | null;
+    email: string | null;
+    phone: string | null;
+    address: string | null;
+    logoUrl: string | null;
     slug: string;
     isDemo: boolean;
     isSandbox: boolean;
@@ -212,6 +219,9 @@ export class AuthService {
    */
   async registerSandboxStore(params: {
     storeName: string;
+    document: string;
+    phone?: string;
+    address?: string;
     ownerName: string;
     email: string;
     password: string;
@@ -243,14 +253,20 @@ export class AuthService {
         expires_at: Date;
       }>(
         `INSERT INTO tenants (
-           name, slug, is_demo, is_sandbox, max_products, unity_api_key, expires_at
+           name, legal_name, document, email, phone, address,
+           slug, is_demo, is_sandbox, max_products, unity_api_key, expires_at
          )
-         VALUES ($1, $2, FALSE, TRUE, $3, $4, NOW() + ($5 || ' hours')::INTERVAL)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, TRUE, $8, $9, NOW() + ($10 || ' hours')::INTERVAL)
          RETURNING id, name, slug, is_demo, is_sandbox, max_products, expires_at`,
         [
           params.storeName.trim(),
+          `${params.storeName.trim()} Comércio de Moda Ltda`,
+          params.document.trim(),
+          emailNormalized,
+          params.phone?.trim() || null,
+          params.address?.trim() || null,
           uniqueSlug,
-          env.SANDBOX_MAX_PRODUCTS,
+          env.SANDBOX_TTL_HOURS ? env.SANDBOX_MAX_PRODUCTS : 15,
           unityApiKey,
           String(env.SANDBOX_TTL_HOURS),
         ]
@@ -264,10 +280,32 @@ export class AuthService {
         email: string;
         role: UserRole;
       }>(
-        `INSERT INTO users (tenant_id, name, email, password_hash, role)
-         VALUES ($1, $2, $3, $4, 'OWNER')
+        `INSERT INTO users (tenant_id, name, email, document, phone, job_title, password_hash, role)
+         VALUES ($1, $2, $3, $4, $5, 'Proprietário / Gerente', $6, 'OWNER')
          RETURNING id, name, email, role`,
-        [tenant.id, params.ownerName.trim(), emailNormalized, passwordHash]
+        [
+          tenant.id,
+          params.ownerName.trim(),
+          emailNormalized,
+          params.document.trim(),
+          params.phone?.trim() || null,
+          passwordHash,
+        ]
+      );
+
+      const shortTenant = tenant.id.slice(0, 8);
+      await client.query(
+        `INSERT INTO users (tenant_id, name, email, phone, document, job_title, password_hash, role)
+         VALUES
+           ($1, 'Beatriz Santos', $2, '(11) 99223-3445', '234.567.890-11', 'Vendedora', $4, 'STAFF'),
+           ($1, 'Diego Ferreira', $3, '(11) 99334-4556', '345.678.901-22', 'Vendedor / Caixa', $4, 'STAFF')
+         ON CONFLICT (tenant_id, email) DO NOTHING`,
+        [
+          tenant.id,
+          `beatriz.${shortTenant}@loja.com`,
+          `diego.${shortTenant}@loja.com`,
+          passwordHash,
+        ]
       );
 
       // Executa a procedure SQL que popula os 2 produtos pré-cadastrados, cores, tamanhos e estoque
@@ -425,6 +463,23 @@ export class AuthService {
       ]
     );
 
+    const tenantProfileRes = await query<{
+      legal_name: string | null;
+      document: string | null;
+      state_registration: string | null;
+      email: string | null;
+      phone: string | null;
+      address: string | null;
+      logo_url: string | null;
+    }>(
+      `SELECT legal_name, document, state_registration, email, phone, address, logo_url
+       FROM tenants
+       WHERE id = $1
+       LIMIT 1`,
+      [data.tenantId]
+    );
+    const tp = tenantProfileRes.rows[0];
+
     return {
       accessToken,
       refreshToken: refresh.token,
@@ -437,6 +492,13 @@ export class AuthService {
       tenant: {
         id: data.tenantId,
         name: data.tenantName,
+        legalName: tp?.legal_name ?? null,
+        document: tp?.document ?? null,
+        stateRegistration: tp?.state_registration ?? null,
+        email: tp?.email ?? null,
+        phone: tp?.phone ?? null,
+        address: tp?.address ?? null,
+        logoUrl: tp?.logo_url ?? null,
         slug: data.tenantSlug,
         isDemo: data.isDemo,
         isSandbox: data.isSandbox,

@@ -8,6 +8,10 @@ import {
   authRateLimiter,
   sandboxCreationLimiter,
 } from '../../shared/middlewares/rateLimiter';
+import {
+  processStoreLogo,
+  removeCustomUploadIfExists,
+} from '../../shared/utils/imageUpload';
 import { authService } from './auth.service';
 
 export const authRouter = Router();
@@ -35,6 +39,18 @@ const sandboxRegisterSchema = z.object({
     .string()
     .min(3, 'Nome da loja deve ter no mínimo 3 caracteres')
     .max(80, 'Nome da loja muito longo'),
+  document: z
+    .string()
+    .transform((v) => v.replace(/\D/g, ''))
+    .refine(
+      (v) => v.length === 11 || v.length === 14,
+      'Informe um CPF (11 números) ou CNPJ (14 números) válido'
+    ),
+  phone: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.replace(/\D/g, '').slice(0, 11) : '')),
+  address: z.string().max(255).optional().or(z.literal('')),
   ownerName: z
     .string()
     .min(2, 'Informe seu nome')
@@ -44,6 +60,29 @@ const sandboxRegisterSchema = z.object({
     .string()
     .min(6, 'A senha deve ter pelo menos 6 caracteres')
     .max(100),
+});
+
+const updateStoreProfileSchema = z.object({
+  name: z
+    .string()
+    .min(2, 'Informe o Nome Fantasia da loja')
+    .max(120),
+  legalName: z.string().max(160).optional().or(z.literal('')),
+  document: z
+    .string()
+    .transform((v) => v.replace(/\D/g, ''))
+    .refine(
+      (v) => v.length === 11 || v.length === 14,
+      'O CPF (11 números) ou CNPJ (14 números) da loja é obrigatório'
+    ),
+  stateRegistration: z.string().max(40).optional().or(z.literal('')),
+  email: z.string().email('Informe um e-mail válido').max(160).optional().or(z.literal('')),
+  phone: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.replace(/\D/g, '').slice(0, 11) : '')),
+  address: z.string().max(255).optional().or(z.literal('')),
+  logoInput: z.string().optional().nullable(),
 });
 
 /**
@@ -121,6 +160,9 @@ authRouter.post(
       const body = sandboxRegisterSchema.parse(req.body);
       const session = await authService.registerSandboxStore({
         storeName: body.storeName,
+        document: body.document,
+        phone: body.phone,
+        address: body.address,
         ownerName: body.ownerName,
         email: body.email,
         password: body.password,
@@ -186,6 +228,75 @@ authRouter.post('/logout', async (req, res, next) => {
 });
 
 /**
+ * GET /api/v1/auth/public-stores
+ * Retorna lojas clientes para exibir na vitrine da tela de login ("Alguns de nossos clientes lojistas")
+ */
+authRouter.get('/public-stores', async (_req, res, next) => {
+  try {
+    const dbStores = await query<{
+      id: string;
+      name: string;
+      logoUrl: string | null;
+      address: string | null;
+      phone: string | null;
+    }>(
+      `SELECT
+         id,
+         name,
+         logo_url AS "logoUrl",
+         address,
+         phone
+       FROM tenants
+       WHERE active = TRUE
+       ORDER BY created_at DESC
+       LIMIT 6`
+    );
+
+    const showcaseClients = [
+      {
+        id: 'partner-1',
+        name: 'Boutique Bella Donna',
+        logoUrl: null,
+        address: 'Rua Oscar Freire, 412 - Jardins, São Paulo/SP',
+        phone: '(11) 3082-4410',
+      },
+      {
+        id: 'partner-2',
+        name: 'Atelier Fio Nobre Alfaiataria',
+        logoUrl: null,
+        address: 'Av. Batel, 1280 - Batel, Curitiba/PR',
+        phone: '(41) 3342-8890',
+      },
+      {
+        id: 'partner-3',
+        name: 'Kroma Streetwear & Jeans',
+        logoUrl: null,
+        address: 'Rua Visconde de Pirajá, 310 - Ipanema, Rio de Janeiro/RJ',
+        phone: '(21) 2523-7712',
+      },
+      {
+        id: 'partner-4',
+        name: 'Lumina Moda Feminina',
+        logoUrl: null,
+        address: 'Rua Padre Chagas, 220 - Moinhos de Vento, Porto Alegre/RS',
+        phone: null,
+      },
+      {
+        id: 'partner-5',
+        name: 'Casa do Algodão Básico',
+        logoUrl: null,
+        address: 'Av. Savassi, 950 - Belo Horizonte/MG',
+        phone: '(31) 3281-5500',
+      },
+    ];
+
+    res.json([...dbStores.rows, ...showcaseClients]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /api/v1/auth/me
  */
 authRouter.get('/me', requireAuth, async (req, res, next) => {
@@ -194,7 +305,11 @@ authRouter.get('/me', requireAuth, async (req, res, next) => {
     const result = await query(
       `SELECT
          u.id, u.name, u.email, u.role,
-         t.id AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug,
+         t.id AS tenant_id, t.name AS tenant_name,
+         t.legal_name, t.document, t.state_registration,
+         t.email AS tenant_email, t.phone AS tenant_phone,
+         t.address AS tenant_address, t.logo_url,
+         t.slug AS tenant_slug,
          t.is_demo, t.is_sandbox, t.max_products, t.expires_at
        FROM users u
        INNER JOIN tenants t ON t.id = u.tenant_id
@@ -218,6 +333,13 @@ authRouter.get('/me', requireAuth, async (req, res, next) => {
       tenant: {
         id: row.tenant_id,
         name: row.tenant_name,
+        legalName: row.legal_name,
+        document: row.document,
+        stateRegistration: row.state_registration,
+        email: row.tenant_email,
+        phone: row.tenant_phone,
+        address: row.tenant_address,
+        logoUrl: row.logo_url,
         slug: row.tenant_slug,
         isDemo: row.is_demo,
         isSandbox: row.is_sandbox,
@@ -225,6 +347,115 @@ authRouter.get('/me', requireAuth, async (req, res, next) => {
         expiresAt: row.expires_at,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/auth/store-profile
+ * Obtém o cadastro completo da loja ativa
+ */
+authRouter.get('/store-profile', requireAuth, async (req, res, next) => {
+  try {
+    const { tenantId } = req.auth!;
+    const result = await query(
+      `SELECT
+         id,
+         name,
+         legal_name AS "legalName",
+         document,
+         state_registration AS "stateRegistration",
+         email,
+         phone,
+         address,
+         logo_url AS "logoUrl",
+         slug
+       FROM tenants
+       WHERE id = $1
+       LIMIT 1`,
+      [tenantId]
+    );
+
+    if (!result.rows[0]) {
+      throw new AppError('Loja não encontrada.', 404, 'STORE_NOT_FOUND');
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PUT /api/v1/auth/store-profile
+ * Atualiza o cadastro do perfil do lojista (Nome Fantasia, Razão Social, CNPJ, IE, Endereço, Telefone e Logo)
+ */
+authRouter.put('/store-profile', requireAuth, async (req, res, next) => {
+  try {
+    const { tenantId } = req.auth!;
+    const body = updateStoreProfileSchema.parse(req.body);
+
+    const currentRes = await query<{ logo_url: string | null }>(
+      `SELECT logo_url FROM tenants WHERE id = $1 LIMIT 1`,
+      [tenantId]
+    );
+    const currentLogo = currentRes.rows[0]?.logo_url ?? null;
+
+    let finalLogoUrl = currentLogo;
+    if (body.logoInput !== undefined) {
+      if (body.logoInput === null || body.logoInput.trim() === '') {
+        await removeCustomUploadIfExists(currentLogo);
+        finalLogoUrl = null;
+      } else if (body.logoInput !== currentLogo) {
+        finalLogoUrl = await processStoreLogo(body.logoInput, tenantId);
+        if (currentLogo && currentLogo !== finalLogoUrl) {
+          await removeCustomUploadIfExists(currentLogo);
+        }
+      }
+    }
+
+    const updated = await query(
+      `UPDATE tenants
+       SET name = $1,
+           legal_name = $2,
+           document = $3,
+           state_registration = $4,
+           email = $5,
+           phone = $6,
+           address = $7,
+           logo_url = $8,
+           updated_at = NOW()
+       WHERE id = $9
+       RETURNING
+         id,
+         name,
+         legal_name AS "legalName",
+         document,
+         state_registration AS "stateRegistration",
+         email,
+         phone,
+         address,
+         logo_url AS "logoUrl",
+         slug,
+         is_demo AS "isDemo",
+         is_sandbox AS "isSandbox",
+         max_products AS "maxProducts",
+         expires_at AS "expiresAt"`,
+      [
+        body.name.trim(),
+        body.legalName?.trim() || null,
+        body.document.trim(),
+        body.stateRegistration?.trim() || null,
+        body.email?.trim() || null,
+        body.phone?.trim() || null,
+        body.address?.trim() || null,
+        finalLogoUrl,
+        tenantId,
+      ]
+    );
+
+    res.json(updated.rows[0]);
   } catch (error) {
     next(error);
   }

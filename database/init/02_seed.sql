@@ -8,10 +8,16 @@ CREATE OR REPLACE FUNCTION seed_tenant_catalog(
 )
 RETURNS VOID AS $$
 DECLARE
+    v_owner_user UUID;
+    v_emp_beatriz UUID;
+    v_emp_diego UUID;
     v_cat_camisetas UUID;
     v_cat_moletons UUID;
     v_cat_calcas UUID;
     v_sup_textil UUID;
+    v_sup_malharia UUID;
+    v_cust_marina UUID;
+    v_cust_lucas UUID;
     v_size_p UUID;
     v_size_m UUID;
     v_size_g UUID;
@@ -27,12 +33,44 @@ DECLARE
     v_var_hood_m_nvy UUID;
     v_var_hood_g_blk UUID;
     v_order_demo UUID;
+    v_order_pos UUID;
 BEGIN
+    SELECT id INTO v_owner_user FROM users WHERE tenant_id = p_tenant_id ORDER BY created_at ASC LIMIT 1;
+
+    -- 0. Funcionários / Vendedores Padrão da Loja
+    INSERT INTO users (tenant_id, name, email, phone, document, job_title, password_hash, role)
+    VALUES (
+        p_tenant_id,
+        'Beatriz Santos',
+        'beatriz.' || SUBSTRING(p_tenant_id::text FROM 1 FOR 8) || '@loja.com',
+        '(11) 99223-3445',
+        '234.567.890-11',
+        'Vendedora',
+        '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy',
+        'STAFF'
+    )
+    ON CONFLICT (tenant_id, email) DO UPDATE SET name = EXCLUDED.name
+    RETURNING id INTO v_emp_beatriz;
+
+    INSERT INTO users (tenant_id, name, email, phone, document, job_title, password_hash, role)
+    VALUES (
+        p_tenant_id,
+        'Diego Ferreira',
+        'diego.' || SUBSTRING(p_tenant_id::text FROM 1 FOR 8) || '@loja.com',
+        '(11) 99334-4556',
+        '345.678.901-22',
+        'Vendedor / Caixa',
+        '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy',
+        'STAFF'
+    )
+    ON CONFLICT (tenant_id, email) DO UPDATE SET name = EXCLUDED.name
+    RETURNING id INTO v_emp_diego;
+
     -- 1. Categorias Base
     INSERT INTO categories (tenant_id, name, slug, description)
     VALUES
         (p_tenant_id, 'Camisetas Streetwear', 'camisetas-streetwear', 'Camisetas de algodão egípcio e modelagem oversized'),
-        (p_tenant_id, 'Moletons & Jaquetas', 'moletons-jaquetas', 'Hoodies pesados 3cabos e jaquetas corta-vento'),
+        (p_tenant_id, 'Moletons & Jaquetas', 'moletons-jaquetas', 'Hoodies pesados 3 cabos e jaquetas corta-vento'),
         (p_tenant_id, 'Calças & Cargo', 'calcas-cargo', 'Calças jogger, jeans e cargo utilitárias')
     ON CONFLICT (tenant_id, slug) DO NOTHING;
 
@@ -40,7 +78,7 @@ BEGIN
     SELECT id INTO v_cat_moletons FROM categories WHERE tenant_id = p_tenant_id AND slug = 'moletons-jaquetas';
     SELECT id INTO v_cat_calcas FROM categories WHERE tenant_id = p_tenant_id AND slug = 'calcas-cargo';
 
-    -- 2. Fornecedor Padrão
+    -- 2. Fornecedores Padrão
     INSERT INTO suppliers (tenant_id, name, document, email, phone, lead_time_days)
     VALUES (
         p_tenant_id,
@@ -51,6 +89,40 @@ BEGIN
         5
     )
     RETURNING id INTO v_sup_textil;
+
+    INSERT INTO suppliers (tenant_id, name, document, email, phone, lead_time_days)
+    VALUES (
+        p_tenant_id,
+        'Malharia Sul Brasil S.A.',
+        '98.765.432/0001-10',
+        'comercial@malhariasul.com.br',
+        '(47) 99123-4567',
+        7
+    )
+    RETURNING id INTO v_sup_malharia;
+
+    -- 2.1 Clientes Padrão
+    INSERT INTO customers (tenant_id, name, email, phone, document, notes)
+    VALUES (
+        p_tenant_id,
+        'Marina Costa',
+        'marina.costa@email.com',
+        '(11) 99887-6655',
+        '345.678.901-22',
+        'Cliente fiel de lançamentos streetwear'
+    )
+    RETURNING id INTO v_cust_marina;
+
+    INSERT INTO customers (tenant_id, name, email, phone, document, notes)
+    VALUES (
+        p_tenant_id,
+        'Lucas Oliveira',
+        'lucas.oliveira@email.com',
+        '(21) 98877-5544',
+        '456.789.012-33',
+        'Prefere tamanhos G e GG'
+    )
+    RETURNING id INTO v_cust_lucas;
 
     -- 3. Grade de Tamanhos
     INSERT INTO sizes (tenant_id, code, name, display_order)
@@ -66,7 +138,7 @@ BEGIN
     SELECT id INTO v_size_g FROM sizes WHERE tenant_id = p_tenant_id AND code = 'G';
     SELECT id INTO v_size_gg FROM sizes WHERE tenant_id = p_tenant_id AND code = 'GG';
 
-    -- 4. Cartela de Cores (com Hex Code para Shaders da Unity 3D)
+    -- 4. Cartela de Cores
     INSERT INTO colors (tenant_id, name, hex_code)
     VALUES
         (p_tenant_id, 'Preto Ônix', '#111827'),
@@ -78,7 +150,7 @@ BEGIN
     SELECT id INTO v_color_offwhite FROM colors WHERE tenant_id = p_tenant_id AND name = 'Off-White';
     SELECT id INTO v_color_navy FROM colors WHERE tenant_id = p_tenant_id AND name = 'Azul Marinho';
 
-    -- 5. Produtos Pré-Cadastrados (2 Produtos Padrão para qualquer nova Loja / Demo)
+    -- 5. Produtos Pré-Cadastrados (2 Produtos Padrão)
     INSERT INTO products (
         tenant_id, category_id, supplier_id, name, slug, description,
         base_price, cost_price, image_url, is_custom_upload,
@@ -109,7 +181,7 @@ BEGIN
     VALUES (
         p_tenant_id,
         v_cat_moletons,
-        v_sup_textil,
+        v_sup_malharia,
         'Moletom Canguru Cyber Tech',
         'moletom-canguru-cyber-tech',
         'Moletom felpado 350g com capuz duplo e acabamento hidro-repelente.',
@@ -149,29 +221,31 @@ BEGIN
         (p_tenant_id, v_prod_hoodie, v_size_g, v_color_black, 'HOD-CYB-BLK-G', '7890002000012', 4, 5)
     RETURNING id INTO v_var_hood_g_blk;
 
-    -- 7. Registro Transacional de Saldo Inicial no Livro-Razão (stock_movements)
+    -- 7. Registro Transacional de Saldo Inicial no Livro-Razão
     INSERT INTO stock_movements (
         tenant_id, variant_id, supplier_id, movement_type,
-        quantity, previous_stock, new_stock, unit_cost, reason
+        quantity, previous_stock, new_stock, unit_cost, invoice_number, tag_code, reason, created_by_user_id
     )
     VALUES
-        (p_tenant_id, v_var_over_p_blk, v_sup_textil, 'INITIAL_BALANCE', 15, 0, 15, 48.50, 'Carga inicial do catálogo'),
-        (p_tenant_id, v_var_over_m_blk, v_sup_textil, 'INITIAL_BALANCE', 24, 0, 24, 48.50, 'Carga inicial do catálogo'),
-        (p_tenant_id, v_var_over_g_wht, v_sup_textil, 'INITIAL_BALANCE', 18, 0, 18, 48.50, 'Carga inicial do catálogo'),
-        (p_tenant_id, v_var_hood_m_nvy, v_sup_textil, 'INITIAL_BALANCE', 10, 0, 10, 95.00, 'Carga inicial do catálogo'),
-        (p_tenant_id, v_var_hood_g_blk, v_sup_textil, 'INITIAL_BALANCE', 4,  0, 4,  95.00, 'Carga inicial do catálogo');
+        (p_tenant_id, v_var_over_p_blk, v_sup_textil, 'INITIAL_BALANCE', 15, 0, 15, 48.50, 'NF-FORN-00412', '7890001000011', 'Carga inicial do catálogo', v_owner_user),
+        (p_tenant_id, v_var_over_m_blk, v_sup_textil, 'INITIAL_BALANCE', 25, 0, 25, 48.50, 'NF-FORN-00412', '7890001000012', 'Carga inicial do catálogo', v_owner_user),
+        (p_tenant_id, v_var_over_g_wht, v_sup_textil, 'INITIAL_BALANCE', 19, 0, 19, 48.50, 'NF-FORN-00412', '7890001000013', 'Carga inicial do catálogo', v_owner_user),
+        (p_tenant_id, v_var_hood_m_nvy, v_sup_malharia, 'INITIAL_BALANCE', 11, 0, 11, 95.00, 'NF-FORN-00889', '7890002000011', 'Carga inicial do catálogo', v_owner_user),
+        (p_tenant_id, v_var_hood_g_blk, v_sup_malharia, 'INITIAL_BALANCE', 4,  0, 4,  95.00, 'NF-FORN-00889', '7890002000012', 'Carga inicial do catálogo', v_owner_user);
 
-    -- 8. Se for a Loja Demo Pública, registra um pedido de exemplo vindo do Meta Quest (Unity)
+    -- 8. Vendas de Exemplo com vínculo ao Cliente, Funcionário e Nota Fiscal Emitida
     IF p_include_demo_orders THEN
         INSERT INTO orders (
-            tenant_id, channel, status, customer_name, customer_email,
-            unity_session_id, idempotency_key, total_amount, notes
+            tenant_id, channel, status, customer_id, customer_name, customer_email, customer_document,
+            invoice_number, invoice_series, invoice_access_key, invoice_issued_at,
+            unity_session_id, idempotency_key, total_amount, notes, created_by_user_id
         )
         VALUES (
             p_tenant_id, 'UNITY_META_QUEST', 'PAID',
-            'Visitante VR (Meta Quest 3)', 'vr.player@example.com',
+            v_cust_marina, 'Marina Costa', 'marina.costa@email.com', '345.678.901-22',
+            'NF-000101', '001', '35261012345678000190550010000001011000010190', NOW() - INTERVAL '2 hours',
             'QUEST3-SESSION-DEMO-001', 'DEMO-IDEMPOTENCY-001',
-            379.80, 'Compra realizada na loja virtual 3D (Unity)'
+            379.80, 'Compra realizada na loja virtual 3D', COALESCE(v_emp_beatriz, v_owner_user)
         )
         RETURNING id INTO v_order_demo;
 
@@ -179,7 +253,39 @@ BEGIN
         VALUES
             (p_tenant_id, v_order_demo, v_var_over_m_blk, 1, 129.90, 129.90),
             (p_tenant_id, v_order_demo, v_var_hood_m_nvy, 1, 249.90, 249.90);
+
+        INSERT INTO stock_movements (
+            tenant_id, variant_id, order_id, movement_type,
+            quantity, previous_stock, new_stock, invoice_number, tag_code, reason, reference_channel, created_by_user_id
+        )
+        VALUES
+            (p_tenant_id, v_var_over_m_blk, v_order_demo, 'SALE_OUT', 1, 25, 24, 'NF-000101', 'TSH-OVR-BLK-M', 'Venda NF-000101 para Marina Costa', 'UNITY_META_QUEST', COALESCE(v_emp_beatriz, v_owner_user)),
+            (p_tenant_id, v_var_hood_m_nvy, v_order_demo, 'SALE_OUT', 1, 11, 10, 'NF-000101', 'HOD-CYB-NVY-M', 'Venda NF-000101 para Marina Costa', 'UNITY_META_QUEST', COALESCE(v_emp_beatriz, v_owner_user));
+
+        INSERT INTO orders (
+            tenant_id, channel, status, customer_id, customer_name, customer_email, customer_document,
+            invoice_number, invoice_series, invoice_access_key, invoice_issued_at,
+            idempotency_key, total_amount, notes, created_by_user_id
+        )
+        VALUES (
+            p_tenant_id, 'ERP_POS', 'PAID',
+            v_cust_lucas, 'Lucas Oliveira', 'lucas.oliveira@email.com', '456.789.012-33',
+            'NF-000102', '001', '35261012345678000190550010000001021000010288', NOW() - INTERVAL '1 hour',
+            'DEMO-IDEMPOTENCY-002',
+            129.90, 'Venda realizada no balcão da loja', COALESCE(v_emp_diego, v_owner_user)
+        )
+        RETURNING id INTO v_order_pos;
+
+        INSERT INTO order_items (tenant_id, order_id, variant_id, quantity, unit_price, subtotal)
+        VALUES
+            (p_tenant_id, v_order_pos, v_var_over_g_wht, 1, 129.90, 129.90);
+
+        INSERT INTO stock_movements (
+            tenant_id, variant_id, order_id, movement_type,
+            quantity, previous_stock, new_stock, invoice_number, tag_code, reason, reference_channel, created_by_user_id
+        )
+        VALUES
+            (p_tenant_id, v_var_over_g_wht, v_order_pos, 'SALE_OUT', 1, 19, 18, 'NF-000102', 'TSH-OVR-WHT-G', 'Venda NF-000102 para Lucas Oliveira', 'ERP_POS', COALESCE(v_emp_diego, v_owner_user));
     END IF;
 END;
 $$ LANGUAGE plpgsql;
-

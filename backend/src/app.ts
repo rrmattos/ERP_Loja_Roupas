@@ -10,6 +10,7 @@ import { authRouter } from './modules/auth/auth.routes';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes';
 import { inventoryRouter } from './modules/inventory/inventory.routes';
 import { ordersRouter } from './modules/orders/orders.routes';
+import { partnersRouter } from './modules/partners/partners.routes';
 import { productsRouter } from './modules/products/products.routes';
 import { unityRouter } from './modules/unity/unity.routes';
 import { errorHandler } from './shared/middlewares/errorHandler';
@@ -48,8 +49,8 @@ app.use(
   })
 );
 
-// 3. Limite estrito de tamanho de payload JSON (1MB para suportar upload WebP comprimido de até 500KB) + Cookies + HPP
-app.use(express.json({ limit: '1mb' }));
+// 3. Limite estrito de tamanho de payload JSON (4MB para suportar upload WebP comprimido de imagens de até 3MB) + Cookies + HPP
+app.use(express.json({ limit: '4mb' }));
 app.use(express.urlencoded({ extended: false, limit: '50kb' }));
 app.use(cookieParser());
 app.use(hpp());
@@ -87,6 +88,7 @@ app.use('/api/v1/dashboard', dashboardRouter);
 app.use('/api/v1/products', productsRouter);
 app.use('/api/v1/inventory', inventoryRouter);
 app.use('/api/v1/orders', ordersRouter);
+app.use('/api/v1/partners', partnersRouter);
 app.use('/api/v1/unity', unityRouter);
 
 // 8. Rota 404 padronizada

@@ -21,11 +21,24 @@ export function errorHandler(
   }
 
   if (err instanceof ZodError) {
+    const fieldErrors = err.flatten().fieldErrors as Record<string, string[] | undefined>;
+    const errorList: string[] = [];
+    for (const messages of Object.values(fieldErrors)) {
+      if (Array.isArray(messages)) {
+        errorList.push(...messages);
+      }
+    }
+
+    const descriptiveMessage =
+      errorList.length > 0
+        ? `Por favor, corrija os seguintes campos: ${errorList.join(' • ')}`
+        : 'Dados de entrada inválidos. Verifique os campos destacados em vermelho.';
+
     res.status(422).json({
       status: 'error',
       code: 'VALIDATION_ERROR',
-      message: 'Dados de entrada inválidos',
-      details: err.flatten().fieldErrors,
+      message: descriptiveMessage,
+      details: fieldErrors,
     });
     return;
   }

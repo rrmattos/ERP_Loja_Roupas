@@ -86,10 +86,10 @@ export async function processProductImage(
   const base64Data = matches[2];
   const buffer = Buffer.from(base64Data, 'base64');
 
-  const maxBytes = env.MAX_UPLOAD_SIZE_KB * 1024;
+  const maxBytes = Math.min(env.MAX_UPLOAD_SIZE_KB * 1024, 3 * 1024 * 1024);
   if (buffer.length > maxBytes) {
     throw new AppError(
-      `A imagem excede o limite máximo de ${env.MAX_UPLOAD_SIZE_KB} KB.`,
+      'A imagem excede o limite máximo permitido de 3 MB.',
       413,
       'IMAGE_TOO_LARGE'
     );
@@ -116,6 +116,23 @@ export async function processProductImage(
     imageUrl: `/uploads/${fileName}`,
     isCustomUpload: true,
   };
+}
+
+export async function processStoreLogo(
+  logoInput: string | null | undefined,
+  tenantId: string
+): Promise<string | null> {
+  if (!logoInput || logoInput.trim() === '') {
+    return null;
+  }
+
+  const trimmed = logoInput.trim();
+  if (trimmed.startsWith('/uploads/') || trimmed.startsWith('https://')) {
+    return trimmed;
+  }
+
+  const processed = await processProductImage(trimmed, tenantId);
+  return processed.imageUrl;
 }
 
 export async function removeCustomUploadIfExists(imageUrl: string | null | undefined): Promise<void> {

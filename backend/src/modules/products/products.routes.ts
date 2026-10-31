@@ -31,9 +31,18 @@ const createCategorySchema = z.object({
 
 const createSupplierSchema = z.object({
   name: z.string().min(2).max(120),
-  document: z.string().max(30).optional(),
+  document: z
+    .string()
+    .transform((v) => v.replace(/\D/g, ''))
+    .refine(
+      (v) => v.length === 11 || v.length === 14,
+      'O CNPJ (14 números) ou CPF (11 números) do fornecedor é obrigatório'
+    ),
   email: z.string().email().max(160).optional().or(z.literal('')),
-  phone: z.string().max(30).optional(),
+  phone: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.replace(/\D/g, '').slice(0, 11) : '')),
   leadTimeDays: z.coerce.number().int().min(1).max(180).default(7),
 });
 
@@ -93,6 +102,16 @@ const updateProductSchema = z.object({
     .optional()
     .nullable(),
   active: z.boolean().default(true),
+  existingVariants: z
+    .array(
+      z.object({
+        id: z.string().uuid(),
+        sku: z.string().min(2).max(64).transform((v) => v.toUpperCase().trim()),
+        minStockAlert: z.coerce.number().int().min(0).max(1000).default(5),
+      })
+    )
+    .optional()
+    .default([]),
   newVariants: z.array(variantInputSchema).optional().default([]),
 });
 
@@ -403,15 +422,16 @@ productsRouter.post('/', async (req, res, next) => {
           await client.query(
             `INSERT INTO stock_movements (
                tenant_id, variant_id, supplier_id, movement_type,
-               quantity, previous_stock, new_stock, unit_cost, reason, created_by_user_id
+               quantity, previous_stock, new_stock, unit_cost, tag_code, reason, created_by_user_id
              )
-             VALUES ($1, $2, $3, 'INITIAL_BALANCE', $4, 0, $4, $5, 'Saldo inicial no cadastro do produto', $6)`,
+             VALUES ($1, $2, $3, 'INITIAL_BALANCE', $4, 0, $4, $5, $6, 'Saldo inicial e etiquetagem no cadastro do produto', $7)`,
             [
               tenantId,
               varRes.rows[0].id,
               body.supplierId || null,
               v.initialStock,
               body.costPrice,
+              v.sku,
               userId,
             ]
           );
@@ -505,6 +525,15 @@ productsRouter.put('/:id', async (req, res, next) => {
         ]
       );
 
+      for (const ev of body.existingVariants) {
+        await client.query(
+          `UPDATE product_variants
+           SET sku = $1, min_stock_alert = $2
+           WHERE id = $3 AND product_id = $4 AND tenant_id = $5`,
+          [ev.sku, ev.minStockAlert, ev.id, productId, tenantId]
+        );
+      }
+
       for (const v of body.newVariants) {
         const varRes = await client.query<{ id: string }>(
           `INSERT INTO product_variants (
@@ -530,15 +559,16 @@ productsRouter.put('/:id', async (req, res, next) => {
           await client.query(
             `INSERT INTO stock_movements (
                tenant_id, variant_id, supplier_id, movement_type,
-               quantity, previous_stock, new_stock, unit_cost, reason, created_by_user_id
+               quantity, previous_stock, new_stock, unit_cost, tag_code, reason, created_by_user_id
              )
-             VALUES ($1, $2, $3, 'INITIAL_BALANCE', $4, 0, $4, $5, 'Nova variação adicionada ao produto', $6)`,
+             VALUES ($1, $2, $3, 'INITIAL_BALANCE', $4, 0, $4, $5, $6, 'Nova variação e etiqueta adicionadas ao produto', $7)`,
             [
               tenantId,
               varRes.rows[0].id,
               body.supplierId || null,
               v.initialStock,
               body.costPrice,
+              v.sku,
               userId,
             ]
           );
