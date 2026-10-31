@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import {
   Box,
+  Edit3,
+  Filter,
   ImagePlus,
   Layers,
   Palette,
   Plus,
   RefreshCw,
-  Ruler,
+  Search,
   Trash2,
   X,
 } from 'lucide-react';
@@ -14,7 +16,14 @@ import {
   apiRequest,
   compressImageToWebP,
   formatCurrencyBRL,
+  getDataUrlSizeKB,
 } from '../services/api';
+import {
+  CsvExportBar,
+  ITEMS_PER_PAGE,
+  PaginationBar,
+} from '../components/ListPaginationAndCsv';
+import { formatCpfCnpjMask, onlyDigits } from '../utils/formatters';
 import {
   Category,
   Color,
@@ -44,18 +53,38 @@ interface DraftVariant {
   minStockAlert: number;
 }
 
+interface EditableExistingVariant {
+  id: string;
+  sizeCode: string;
+  colorName: string;
+  colorHex: string;
+  sku: string;
+  stockQuantity: number;
+  minStockAlert: number;
+}
+
 export const ProductsPage: React.FC = () => {
   const [products, setProducts] = useState<Product[]>([]);
   const [meta, setMeta] = useState<MetadataResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Modais
+  // Filtros de Busca na Tela de Produtos
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [filterCategoryId, setFilterCategoryId] = useState<string>('ALL');
+  const [filterSupplierId, setFilterSupplierId] = useState<string>('ALL');
+  const [filterStockStatus, setFilterStockStatus] = useState<
+    'ALL' | 'NORMAL' | 'LOW' | 'OUT'
+  >('ALL');
+  const [currentPage, setCurrentPage] = useState<number>(1);
+
+  // Modais (Criar ou Editar Produto)
   const [showProductModal, setShowProductModal] = useState<boolean>(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [showAttributeModal, setShowAttributeModal] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
 
-  // Campos de Novo Produto
+  // Campos do Formulário de Produto
   const [name, setName] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [supplierId, setSupplierId] = useState('');
@@ -64,12 +93,18 @@ export const ProductsPage: React.FC = () => {
   const [costPrice, setCostPrice] = useState('55.00');
   const [imageInput, setImageInput] = useState('/presets/tshirt-oversized.svg');
   const [uploadSizeInfo, setUploadSizeInfo] = useState<string | null>(null);
+  const [existingVariants, setExistingVariants] = useState<
+    EditableExistingVariant[]
+  >([]);
   const [variants, setVariants] = useState<DraftVariant[]>([]);
 
   // Campos de Novos Atributos (Cor, Tamanho, Categoria, Fornecedor)
-  const [attrType, setAttrType] = useState<'color' | 'size' | 'category' | 'supplier'>('color');
+  const [attrType, setAttrType] = useState<
+    'color' | 'size' | 'category' | 'supplier'
+  >('color');
   const [attrName, setAttrName] = useState('');
   const [attrCodeOrHex, setAttrCodeOrHex] = useState('#10B981');
+  const [attrSupplierDocument, setAttrSupplierDocument] = useState('');
 
   const loadAll = async () => {
     setLoading(true);
@@ -80,30 +115,10 @@ export const ProductsPage: React.FC = () => {
       ]);
       setProducts(prodsData);
       setMeta(metaData);
-
-      if (metaData.categories[0] && !categoryId) {
-        setCategoryId(metaData.categories[0].id);
-      }
-      if (metaData.suppliers[0] && !supplierId) {
-        setSupplierId(metaData.suppliers[0].id);
-      }
-      if (
-        variants.length === 0 &&
-        metaData.sizes[0] &&
-        metaData.colors[0]
-      ) {
-        setVariants([
-          {
-            sizeId: metaData.sizes[0].id,
-            colorId: metaData.colors[0].id,
-            sku: `REF-${Math.floor(1000 + Math.random() * 9000)}`,
-            initialStock: 12,
-            minStockAlert: 5,
-          },
-        ]);
-      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro ao carregar produtos.');
+      setError(
+        err instanceof Error ? err.message : 'Erro ao carregar produtos.'
+      );
     } finally {
       setLoading(false);
     }
@@ -113,14 +128,71 @@ export const ProductsPage: React.FC = () => {
     void loadAll();
   }, []);
 
+  const openCreateModal = () => {
+    setEditingProduct(null);
+    setName('');
+    setCategoryId(meta?.categories[0]?.id || '');
+    setSupplierId(meta?.suppliers[0]?.id || '');
+    setDescription('');
+    setBasePrice('149.90');
+    setCostPrice('55.00');
+    setImageInput('/presets/tshirt-oversized.svg');
+    setUploadSizeInfo(null);
+    setExistingVariants([]);
+    if (meta?.sizes[0] && meta?.colors[0]) {
+      setVariants([
+        {
+          sizeId: meta.sizes[0].id,
+          colorId: meta.colors[0].id,
+          sku: `REF-${Math.floor(1000 + Math.random() * 9000)}`,
+          initialStock: 12,
+          minStockAlert: 5,
+        },
+      ]);
+    } else {
+      setVariants([]);
+    }
+    setShowProductModal(true);
+  };
+
+  const openEditModal = (prod: Product) => {
+    setEditingProduct(prod);
+    setName(prod.name);
+    setCategoryId(prod.categoryId || '');
+    setSupplierId(prod.supplierId || '');
+    setDescription(prod.description || '');
+    setBasePrice(String(prod.basePrice));
+    setCostPrice(String(prod.costPrice));
+    setImageInput(prod.imageUrl || '/presets/tshirt-oversized.svg');
+    setUploadSizeInfo(null);
+    setExistingVariants(
+      prod.variants.map((v) => ({
+        id: v.id,
+        sizeCode: v.sizeCode,
+        colorName: v.colorName,
+        colorHex: v.colorHex,
+        sku: v.sku,
+        stockQuantity: v.stockQuantity,
+        minStockAlert: v.minStockAlert,
+      }))
+    );
+    setVariants([]); // Novas variações adicionais opcionais
+    setShowProductModal(true);
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setError(null);
+    setUploadSizeInfo(null);
     try {
-      const compressedDataUrl = await compressImageToWebP(file);
+      const originalKb = Math.max(1, Math.round(file.size / 1024));
+      const compressedDataUrl = await compressImageToWebP(file, 600);
+      const finalKb = getDataUrlSizeKB(compressedDataUrl);
       setImageInput(compressedDataUrl);
-      setUploadSizeInfo('Foto carregada e pronta para salvar');
+      setUploadSizeInfo(
+        `Foto comprimida em WebP otimizado (${originalKb} KB → ${finalKb} KB)`
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao carregar foto.');
     }
@@ -144,29 +216,49 @@ export const ProductsPage: React.FC = () => {
     setVariants((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleCreateProduct = async (e: React.FormEvent) => {
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
-      await apiRequest('/products', {
-        method: 'POST',
-        body: JSON.stringify({
-          name,
-          categoryId: categoryId || null,
-          supplierId: supplierId || null,
-          description,
-          basePrice: Number(basePrice),
-          costPrice: Number(costPrice),
-          imageInput,
-          variants,
-        }),
-      });
+      if (editingProduct) {
+        await apiRequest(`/products/${editingProduct.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            name,
+            categoryId: categoryId || null,
+            supplierId: supplierId || null,
+            description,
+            basePrice: Number(basePrice),
+            costPrice: Number(costPrice),
+            imageInput,
+            active: true,
+            existingVariants: existingVariants.map((ev) => ({
+              id: ev.id,
+              sku: ev.sku,
+              minStockAlert: ev.minStockAlert,
+            })),
+            newVariants: variants,
+          }),
+        });
+      } else {
+        await apiRequest('/products', {
+          method: 'POST',
+          body: JSON.stringify({
+            name,
+            categoryId: categoryId || null,
+            supplierId: supplierId || null,
+            description,
+            basePrice: Number(basePrice),
+            costPrice: Number(costPrice),
+            imageInput,
+            variants,
+          }),
+        });
+      }
 
       setShowProductModal(false);
-      setName('');
-      setDescription('');
-      setUploadSizeInfo(null);
+      setEditingProduct(null);
       await loadAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao salvar produto.');
@@ -219,11 +311,16 @@ export const ProductsPage: React.FC = () => {
       } else if (attrType === 'supplier') {
         await apiRequest('/products/attributes/suppliers', {
           method: 'POST',
-          body: JSON.stringify({ name: attrName, leadTimeDays: 7 }),
+          body: JSON.stringify({
+            name: attrName,
+            document: onlyDigits(attrSupplierDocument, 14),
+            leadTimeDays: 7,
+          }),
         });
       }
 
       setAttrName('');
+      setAttrSupplierDocument('');
       setShowAttributeModal(false);
       await loadAll();
     } catch (err) {
@@ -232,6 +329,45 @@ export const ProductsPage: React.FC = () => {
       setSubmitting(false);
     }
   };
+
+  // Filtragem de produtos por Nome, Código da Etiqueta (SKU), Categoria, Fornecedor e Estoque
+  const filteredProducts = products.filter((prod) => {
+    if (
+      filterCategoryId !== 'ALL' &&
+      (prod.categoryId || '') !== filterCategoryId
+    ) {
+      return false;
+    }
+
+    if (
+      filterSupplierId !== 'ALL' &&
+      (prod.supplierId || '') !== filterSupplierId
+    ) {
+      return false;
+    }
+
+    const hasOutStock = prod.variants.some((v) => v.stockQuantity <= 0);
+    const hasLowStock = prod.variants.some(
+      (v) => v.stockQuantity > 0 && v.isLowStock
+    );
+    if (filterStockStatus === 'OUT' && !hasOutStock) return false;
+    if (filterStockStatus === 'LOW' && !hasLowStock) return false;
+    if (filterStockStatus === 'NORMAL' && (hasLowStock || hasOutStock)) {
+      return false;
+    }
+
+    if (searchQuery.trim() !== '') {
+      const q = searchQuery.trim().toLowerCase();
+      const matchName = prod.name.toLowerCase().includes(q);
+      const matchCategory = (prod.categoryName || '').toLowerCase().includes(q);
+      const matchSku = prod.variants.some((v) =>
+        v.sku.toLowerCase().includes(q)
+      );
+      if (!matchName && !matchCategory && !matchSku) return false;
+    }
+
+    return true;
+  });
 
   if (loading) {
     return (
@@ -251,7 +387,7 @@ export const ProductsPage: React.FC = () => {
             Produtos e Roupas
           </h1>
           <p className="text-sm sm:text-base text-slate-400 mt-1">
-            Cadastre os modelos da sua loja e defina as quantidades por tamanho e cor.
+            Gerencie seus modelos, edite preços, filtre por categoria ou código e controle os tamanhos e cores de cada peça.
           </p>
         </div>
 
@@ -267,7 +403,7 @@ export const ProductsPage: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => setShowProductModal(true)}
+            onClick={openCreateModal}
             className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm font-semibold text-white flex items-center gap-2 transition shadow-md shadow-indigo-950/50 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
@@ -289,186 +425,362 @@ export const ProductsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Resumo de Tamanhos e Cores Cadastrados */}
-      {meta && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
-            <div className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-              <Ruler className="w-4 h-4 text-indigo-400" />
-              <span>Tamanhos Disponíveis</span>
-            </div>
-            <div className="flex flex-wrap gap-2 mt-3">
-              {meta.sizes.map((s) => (
-                <span
-                  key={s.id}
-                  className="px-3 py-1 rounded-lg bg-slate-950 border border-slate-800 text-sm font-semibold text-white"
-                >
-                  {s.code}{' '}
-                  <span className="font-normal text-slate-400">
-                    ({s.name})
-                  </span>
-                </span>
-              ))}
-            </div>
+      {/* Barra de Filtros de Produtos (Por Nome, Código da Etiqueta, Tipo de Roupa e Fornecedor) */}
+      <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
+            <Filter className="w-4 h-4 text-indigo-400" />
+            <span>
+              Filtrar Produtos ({filteredProducts.length} de {products.length}{' '}
+              exibidos)
+            </span>
           </div>
 
-          <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
-            <div className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-              <Palette className="w-4 h-4 text-emerald-400" />
-              <span>Cores Disponíveis</span>
-            </div>
-            <div className="flex flex-wrap gap-2 mt-3">
-              {meta.colors.map((c) => (
-                <span
-                  key={c.id}
-                  className="inline-flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white"
-                >
-                  <span
-                    className="w-3.5 h-3.5 rounded-full border border-slate-600"
-                    style={{ backgroundColor: c.hexCode }}
-                  />
-                  <span>{c.name}</span>
-                </span>
-              ))}
-            </div>
+          {(searchQuery !== '' ||
+            filterCategoryId !== 'ALL' ||
+            filterSupplierId !== 'ALL' ||
+            filterStockStatus !== 'ALL') && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchQuery('');
+                setFilterCategoryId('ALL');
+                setFilterSupplierId('ALL');
+                setFilterStockStatus('ALL');
+              }}
+              className="text-sm text-indigo-400 hover:underline font-medium cursor-pointer"
+            >
+              Limpar filtros
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+          {/* Busca por Nome ou Código */}
+          <div className="relative">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
+            <input
+              type="text"
+              placeholder="Buscar por nome ou código (ex: TSH-OVR)..."
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white focus:outline-none focus:border-indigo-500"
+            />
           </div>
+
+          {/* Filtro por Tipo / Categoria */}
+          <select
+            value={filterCategoryId}
+            onChange={(e) => {
+              setFilterCategoryId(e.target.value);
+              setCurrentPage(1);
+            }}
+            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white"
+          >
+            <option value="ALL">Todos os Tipos / Categorias</option>
+            {meta?.categories.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.name}
+              </option>
+            ))}
+          </select>
+
+          {/* Filtro por Fornecedor */}
+          <select
+            value={filterSupplierId}
+            onChange={(e) => {
+              setFilterSupplierId(e.target.value);
+              setCurrentPage(1);
+            }}
+            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white"
+          >
+            <option value="ALL">Todos os Fornecedores</option>
+            {meta?.suppliers.map((sup) => (
+              <option key={sup.id} value={sup.id}>
+                {sup.name}
+              </option>
+            ))}
+          </select>
+
+          {/* Filtro por Situação de Estoque */}
+          <select
+            value={filterStockStatus}
+            onChange={(e) => {
+              setFilterStockStatus(
+                e.target.value as 'ALL' | 'NORMAL' | 'LOW' | 'OUT'
+              );
+              setCurrentPage(1);
+            }}
+            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white"
+          >
+            <option value="ALL">Qualquer Situação de Estoque</option>
+            <option value="NORMAL">Apenas Estoque em Dia</option>
+            <option value="LOW">Apenas Com Roupas Acabando</option>
+            <option value="OUT">Apenas Sem Roupas no Estoque (Zerado)</option>
+          </select>
+        </div>
+
+        <CsvExportBar
+          reportTitle="Catálogo de Produtos e Roupas"
+          filenamePrefix="produtos-roupas"
+          items={filteredProducts}
+          activeFilters={[
+            { label: 'Busca', value: searchQuery || 'Todas' },
+            {
+              label: 'Categoria',
+              value:
+                filterCategoryId === 'ALL'
+                  ? 'Todas'
+                  : meta?.categories.find((c) => c.id === filterCategoryId)
+                      ?.name || 'Filtro',
+            },
+            {
+              label: 'Fornecedor',
+              value:
+                filterSupplierId === 'ALL'
+                  ? 'Todos'
+                  : meta?.suppliers.find((s) => s.id === filterSupplierId)
+                      ?.name || 'Filtro',
+            },
+            {
+              label: 'Situação Estoque',
+              value:
+                filterStockStatus === 'ALL'
+                  ? 'Todas'
+                  : filterStockStatus === 'OUT'
+                  ? 'Sem roupas no estoque'
+                  : filterStockStatus === 'LOW'
+                  ? 'Roupas acabando'
+                  : 'Estoque em dia',
+            },
+          ]}
+          headers={[
+            'Produto / Roupa',
+            'Categoria',
+            'Fornecedor',
+            'Preço Venda (R$)',
+            'Preço Custo (R$)',
+            'Lucro Unitário (R$)',
+            'Estoque Total (Peças)',
+            'Grade e Etiquetas (Tam/Cor/Etiqueta/Qtd)',
+          ]}
+          rowMapper={(prod) => [
+            prod.name,
+            prod.categoryName || 'Geral',
+            prod.supplierName || 'Sem fornecedor',
+            prod.basePrice.toFixed(2).replace('.', ','),
+            prod.costPrice.toFixed(2).replace('.', ','),
+            (prod.basePrice - prod.costPrice).toFixed(2).replace('.', ','),
+            prod.totalStock,
+            prod.variants
+              .map(
+                (v) =>
+                  `${v.sizeCode}/${v.colorName} [${v.sku}: ${v.stockQuantity} un.]`
+              )
+              .join(' | '),
+          ]}
+        />
+      </div>
+
+      {/* Lista de Produtos Filtrados */}
+      {filteredProducts.length === 0 ? (
+        <div className="p-12 rounded-2xl bg-slate-900 border border-slate-800 text-center space-y-2">
+          <div className="text-base font-bold text-white">
+            Nenhum produto encontrado com esses filtros.
+          </div>
+          <p className="text-sm text-slate-400">
+            Tente buscar por outro nome ou limpe os filtros selecionados acima.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {filteredProducts
+            .slice(
+              (currentPage - 1) * ITEMS_PER_PAGE,
+              currentPage * ITEMS_PER_PAGE
+            )
+            .map((prod) => {
+            const profitAmount = prod.basePrice - prod.costPrice;
+
+            return (
+              <div
+                key={prod.id}
+                className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col lg:flex-row gap-6"
+              >
+                {/* Foto + Informações do Produto */}
+                <div className="flex items-start gap-5 lg:w-5/12">
+                  <img
+                    src={prod.imageUrl || '/presets/tshirt-oversized.svg'}
+                    alt={prod.name}
+                    className="w-24 h-24 rounded-2xl object-cover bg-slate-950 border border-slate-800 shrink-0"
+                  />
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-block px-2.5 py-1 rounded-lg bg-indigo-500/15 text-indigo-300 text-sm font-medium">
+                        {prod.categoryName || 'Geral'}
+                      </span>
+                      {prod.supplierName && (
+                        <span className="text-sm text-slate-400">
+                          • Fornecedor: {prod.supplierName}
+                        </span>
+                      )}
+                    </div>
+
+                    <h3 className="text-lg font-bold text-white mt-2">
+                      {prod.name}
+                    </h3>
+                    <p className="text-sm text-slate-400 mt-1">
+                      {prod.description || 'Sem descrição.'}
+                    </p>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">
+                      <div>
+                        <span className="text-slate-400">Venda: </span>
+                        <strong className="text-emerald-400 text-base">
+                          {formatCurrencyBRL(prod.basePrice)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Custo: </span>
+                        <span className="text-slate-200">
+                          {formatCurrencyBRL(prod.costPrice)}
+                        </span>
+                      </div>
+                      <span className="px-2.5 py-0.5 rounded-lg bg-emerald-500/10 text-emerald-300 text-sm font-medium">
+                        Lucro: {formatCurrencyBRL(profitAmount)} / peça
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Tamanhos e Cores do Produto + Botões Editar / Excluir */}
+                <div className="lg:w-7/12 border-t lg:border-t-0 lg:border-l border-slate-800 pt-4 lg:pt-0 lg:pl-6 flex flex-col justify-between">
+                  <div>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                      <span className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-indigo-400" />
+                        <span>
+                          Tamanhos e Cores deste Modelo (Total:{' '}
+                          <strong className="text-white">
+                            {prod.totalStock} peças
+                          </strong>
+                          )
+                        </span>
+                      </span>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(prod)}
+                          className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-indigo-600 text-indigo-300 hover:text-white text-sm font-medium flex items-center gap-1.5 transition cursor-pointer"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                          <span>Editar</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteProduct(prod)}
+                          title="Excluir produto"
+                          className="px-3 py-1.5 rounded-lg text-sm text-slate-400 hover:text-rose-300 hover:bg-rose-500/10 flex items-center gap-1.5 transition cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          <span>Excluir</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                      {prod.variants.map((v) => {
+                        const isZeroStock = v.stockQuantity <= 0;
+                        return (
+                          <div
+                            key={v.id}
+                            className={`p-3.5 rounded-xl border text-sm flex items-center justify-between ${
+                              isZeroStock
+                                ? 'bg-rose-500/10 border-rose-500/40'
+                                : v.isLowStock
+                                ? 'bg-amber-500/5 border-amber-500/30'
+                                : 'bg-slate-950 border-slate-800'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 font-semibold text-white">
+                                <span className="px-2 py-0.5 rounded bg-slate-800">
+                                  Tam {v.sizeCode}
+                                </span>
+                                <span
+                                  className="w-3.5 h-3.5 rounded-full border border-slate-600 shrink-0"
+                                  style={{ backgroundColor: v.colorHex }}
+                                />
+                                <span className="truncate">{v.colorName}</span>
+                              </div>
+                              <div className="text-sm text-indigo-300 font-mono mt-1">
+                                Etiqueta: {v.sku}
+                              </div>
+                            </div>
+
+                            <div className="text-right shrink-0 ml-2">
+                              <div
+                                className={`text-base font-bold ${
+                                  isZeroStock
+                                    ? 'text-rose-400'
+                                    : v.isLowStock
+                                    ? 'text-amber-400'
+                                    : 'text-emerald-400'
+                                }`}
+                              >
+                                {v.stockQuantity} un.
+                              </div>
+                              {isZeroStock ? (
+                                <div className="text-xs font-bold text-rose-300 mt-0.5">
+                                  Sem roupas no estoque
+                                </div>
+                              ) : (
+                                v.isLowStock && (
+                                  <div className="text-sm text-amber-300">
+                                    Acabando
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          <PaginationBar
+            currentPage={currentPage}
+            totalItems={filteredProducts.length}
+            onPageChange={setCurrentPage}
+          />
         </div>
       )}
 
-      {/* Lista de Produtos */}
-      <div className="space-y-4">
-        {products.map((prod) => {
-          const profitAmount = prod.basePrice - prod.costPrice;
-
-          return (
-            <div
-              key={prod.id}
-              className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col lg:flex-row gap-6"
-            >
-              {/* Foto + Informações do Produto */}
-              <div className="flex items-start gap-5 lg:w-5/12">
-                <img
-                  src={prod.imageUrl || '/presets/tshirt-oversized.svg'}
-                  alt={prod.name}
-                  className="w-24 h-24 rounded-2xl object-cover bg-slate-950 border border-slate-800 shrink-0"
-                />
-
-                <div className="min-w-0 flex-1">
-                  <span className="inline-block px-2.5 py-1 rounded-lg bg-indigo-500/15 text-indigo-300 text-sm font-medium">
-                    {prod.categoryName || 'Geral'}
-                  </span>
-
-                  <h3 className="text-lg font-bold text-white mt-2">
-                    {prod.name}
-                  </h3>
-                  <p className="text-sm text-slate-400 mt-1">
-                    {prod.description || 'Sem descrição.'}
-                  </p>
-
-                  <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">
-                    <div>
-                      <span className="text-slate-400">Venda: </span>
-                      <strong className="text-emerald-400 text-base">
-                        {formatCurrencyBRL(prod.basePrice)}
-                      </strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-400">Custo: </span>
-                      <span className="text-slate-200">
-                        {formatCurrencyBRL(prod.costPrice)}
-                      </span>
-                    </div>
-                    <span className="px-2.5 py-0.5 rounded-lg bg-emerald-500/10 text-emerald-300 text-sm font-medium">
-                      Lucro: {formatCurrencyBRL(profitAmount)} / peça
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Opções de Tamanho e Cor */}
-              <div className="lg:w-7/12 border-t lg:border-t-0 lg:border-l border-slate-800 pt-4 lg:pt-0 lg:pl-6 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-                      <Layers className="w-4 h-4 text-indigo-400" />
-                      <span>
-                        Quantidades por Tamanho e Cor (Total:{' '}
-                        <strong className="text-white">{prod.totalStock} peças</strong>)
-                      </span>
-                    </span>
-
-                    <button
-                      type="button"
-                      onClick={() => void handleDeleteProduct(prod)}
-                      title="Excluir produto"
-                      className="px-3 py-1.5 rounded-lg text-sm text-slate-400 hover:text-rose-300 hover:bg-rose-500/10 flex items-center gap-1.5 transition cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      <span>Excluir</span>
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                    {prod.variants.map((v) => (
-                      <div
-                        key={v.id}
-                        className={`p-3.5 rounded-xl border text-sm flex items-center justify-between ${
-                          v.isLowStock
-                            ? 'bg-amber-500/5 border-amber-500/30'
-                            : 'bg-slate-950 border-slate-800'
-                        }`}
-                      >
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2 font-semibold text-white">
-                            <span className="px-2 py-0.5 rounded bg-slate-800">
-                              Tam {v.sizeCode}
-                            </span>
-                            <span
-                              className="w-3.5 h-3.5 rounded-full border border-slate-600 shrink-0"
-                              style={{ backgroundColor: v.colorHex }}
-                            />
-                            <span className="truncate">{v.colorName}</span>
-                          </div>
-                          <div className="text-sm text-slate-400 mt-1">
-                            Cód: {v.sku}
-                          </div>
-                        </div>
-
-                        <div className="text-right shrink-0 ml-2">
-                          <div
-                            className={`text-base font-bold ${
-                              v.isLowStock ? 'text-amber-400' : 'text-emerald-400'
-                            }`}
-                          >
-                            {v.stockQuantity} un.
-                          </div>
-                          {v.isLowStock && (
-                            <div className="text-sm text-amber-300">
-                              Acabando
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* MODAL 1: Cadastrar Novo Produto */}
+      {/* MODAL 1: Cadastrar ou Editar Produto */}
       {showProductModal && meta && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-3xl p-6 sm:p-8 shadow-2xl my-8 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-4 border-b border-slate-800">
               <div>
                 <h2 className="text-xl font-bold text-white">
-                  Cadastrar Novo Produto
+                  {editingProduct
+                    ? `Editar Produto: ${editingProduct.name}`
+                    : 'Cadastrar Novo Produto'}
                 </h2>
                 <p className="text-sm text-slate-400 mt-0.5">
-                  Preencha os dados da roupa e informe os tamanhos e cores disponíveis.
+                  {editingProduct
+                    ? 'Altere os dados da roupa, preços, foto ou adicione novas opções de tamanho e cor.'
+                    : 'Preencha os dados da roupa e informe os tamanhos e cores disponíveis.'}
                 </p>
               </div>
               <button
@@ -480,7 +792,7 @@ export const ProductsPage: React.FC = () => {
               </button>
             </div>
 
-            <form onSubmit={handleCreateProduct} className="space-y-5 mt-5">
+            <form onSubmit={handleSaveProduct} className="space-y-5 mt-5">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="sm:col-span-2">
                   <label className="block text-sm font-medium text-slate-200 mb-1.5">
@@ -498,7 +810,7 @@ export const ProductsPage: React.FC = () => {
 
                 <div>
                   <label className="block text-sm font-medium text-slate-200 mb-1.5">
-                    Categoria
+                    Categoria (Tipo)
                   </label>
                   <select
                     value={categoryId}
@@ -514,10 +826,10 @@ export const ProductsPage: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-slate-200 mb-1.5">
-                    Preço de Venda para o Cliente (R$)
+                    Preço de Venda (R$)
                   </label>
                   <input
                     type="number"
@@ -531,7 +843,7 @@ export const ProductsPage: React.FC = () => {
 
                 <div>
                   <label className="block text-sm font-medium text-slate-200 mb-1.5">
-                    Preço de Custo / Compra (R$)
+                    Preço de Custo (R$)
                   </label>
                   <input
                     type="number"
@@ -541,6 +853,24 @@ export const ProductsPage: React.FC = () => {
                     onChange={(e) => setCostPrice(e.target.value)}
                     className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-base text-white"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-200 mb-1.5">
+                    Fornecedor
+                  </label>
+                  <select
+                    value={supplierId}
+                    onChange={(e) => setSupplierId(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-base text-white"
+                  >
+                    <option value="">Sem fornecedor fixo</option>
+                    {meta.suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
@@ -562,11 +892,13 @@ export const ProductsPage: React.FC = () => {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-sm font-semibold text-white flex items-center gap-2">
                     <ImagePlus className="w-4 h-4 text-indigo-400" />
-                    <span>Foto do Produto (Escolha abaixo ou envie do computador)</span>
+                    <span>
+                      Foto do Produto (Escolha abaixo ou envie do computador)
+                    </span>
                   </span>
 
                   <label className="px-4 py-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 text-sm font-semibold cursor-pointer transition">
-                    <span>Enviar Foto do Computador</span>
+                    <span>Enviar Foto do Computador (Máx. 3 MB)</span>
                     <input
                       type="file"
                       accept="image/png,image/jpeg,image/webp"
@@ -613,119 +945,205 @@ export const ProductsPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Opções de Tamanho e Cor */}
+              {/* Variações já existentes (quando estiver editando um produto) */}
+              {editingProduct && existingVariants.length > 0 && (
+                <div className="p-5 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+                  <div className="text-sm font-semibold text-white">
+                    Tamanhos e Cores Já Cadastrados neste Produto
+                  </div>
+                  <div className="space-y-2.5">
+                    {existingVariants.map((ev, idx) => (
+                      <div
+                        key={ev.id}
+                        className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center bg-slate-900 p-3 rounded-xl border border-slate-800 text-sm"
+                      >
+                        <div className="sm:col-span-4 flex items-center gap-2 font-semibold text-white">
+                          <span className="px-2.5 py-1 rounded bg-slate-800">
+                            Tam {ev.sizeCode}
+                          </span>
+                          <span
+                            className="w-3.5 h-3.5 rounded-full border border-slate-600"
+                            style={{ backgroundColor: ev.colorHex }}
+                          />
+                          <span>{ev.colorName}</span>
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className="block text-sm text-slate-400 mb-0.5">
+                            Código da Etiqueta
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            value={ev.sku}
+                            onChange={(e) => {
+                              const copy = [...existingVariants];
+                              copy[idx].sku = e.target.value.toUpperCase();
+                              setExistingVariants(copy);
+                            }}
+                            className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-sm text-indigo-300"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className="block text-sm text-slate-400 mb-0.5">
+                            Avisar quando tiver menos de:
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={ev.minStockAlert}
+                            onChange={(e) => {
+                              const copy = [...existingVariants];
+                              copy[idx].minStockAlert = Number(e.target.value);
+                              setExistingVariants(copy);
+                            }}
+                            className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Novas Opções de Tamanho e Cor */}
               <div className="p-5 rounded-xl bg-slate-950 border border-slate-800 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-sm font-semibold text-white flex items-center gap-2">
                     <Box className="w-4 h-4 text-emerald-400" />
-                    <span>Tamanhos, Cores e Quantidades Iniciais</span>
+                    <span>
+                      {editingProduct
+                        ? 'Adicionar Novos Tamanhos ou Cores a este Produto'
+                        : 'Tamanhos, Cores e Quantidades Iniciais'}
+                    </span>
                   </span>
                   <button
                     type="button"
                     onClick={handleAddVariantRow}
                     className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm font-semibold text-indigo-300 cursor-pointer"
                   >
-                    + Adicionar Outro Tamanho / Cor
+                    + Adicionar Tamanho / Cor
                   </button>
                 </div>
 
-                <div className="space-y-3">
-                  {variants.map((v, idx) => (
-                    <div
-                      key={idx}
-                      className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center bg-slate-900 p-3.5 rounded-xl border border-slate-800"
-                    >
-                      <div className="sm:col-span-3">
-                        <label className="block text-sm text-slate-400 mb-1">
-                          Tamanho
-                        </label>
-                        <select
-                          value={v.sizeId}
-                          onChange={(e) => {
-                            const copy = [...variants];
-                            copy[idx].sizeId = e.target.value;
-                            setVariants(copy);
-                          }}
-                          className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white"
-                        >
-                          {meta.sizes.map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {s.code} - {s.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div className="sm:col-span-4">
-                        <label className="block text-sm text-slate-400 mb-1">
-                          Cor
-                        </label>
-                        <select
-                          value={v.colorId}
-                          onChange={(e) => {
-                            const copy = [...variants];
-                            copy[idx].colorId = e.target.value;
-                            setVariants(copy);
-                          }}
-                          className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white"
-                        >
-                          {meta.colors.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div className="sm:col-span-2">
-                        <label className="block text-sm text-slate-400 mb-1">
-                          Código da Etiqueta
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={v.sku}
-                          onChange={(e) => {
-                            const copy = [...variants];
-                            copy[idx].sku = e.target.value.toUpperCase();
-                            setVariants(copy);
-                          }}
-                          className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-indigo-300"
-                        />
-                      </div>
-
-                      <div className="sm:col-span-2">
-                        <label className="block text-sm text-slate-400 mb-1">
-                          Qtd Inicial
-                        </label>
-                        <input
-                          type="number"
-                          min={0}
-                          required
-                          value={v.initialStock}
-                          onChange={(e) => {
-                            const copy = [...variants];
-                            copy[idx].initialStock = Number(e.target.value);
-                            setVariants(copy);
-                          }}
-                          className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white"
-                        />
-                      </div>
-
-                      <div className="sm:col-span-1 flex justify-end pt-5">
-                        {variants.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveVariantRow(idx)}
-                            className="p-2 text-slate-400 hover:text-rose-400 cursor-pointer"
+                {variants.length === 0 && editingProduct ? (
+                  <p className="text-sm text-slate-400">
+                    Clique em "+ Adicionar Tamanho / Cor" acima caso queira incluir uma nova opção na grade deste produto.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {variants.map((v, idx) => (
+                      <div
+                        key={idx}
+                        className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center bg-slate-900 p-3.5 rounded-xl border border-slate-800"
+                      >
+                        <div className="sm:col-span-3">
+                          <label className="block text-sm text-slate-400 mb-1">
+                            Tamanho
+                          </label>
+                          <select
+                            value={v.sizeId}
+                            onChange={(e) => {
+                              const copy = [...variants];
+                              copy[idx].sizeId = e.target.value;
+                              setVariants(copy);
+                            }}
+                            className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white"
                           >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
+                            {meta.sizes.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.code} - {s.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="sm:col-span-3">
+                          <label className="block text-sm text-slate-400 mb-1">
+                            Cor
+                          </label>
+                          <select
+                            value={v.colorId}
+                            onChange={(e) => {
+                              const copy = [...variants];
+                              copy[idx].colorId = e.target.value;
+                              setVariants(copy);
+                            }}
+                            className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white"
+                          >
+                            {meta.colors.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="sm:col-span-3">
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-sm text-slate-400">
+                              Etiqueta (Loja/Fábrica)
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const copy = [...variants];
+                                copy[idx].sku = `ETQ-${Math.floor(1000 + Math.random() * 9000)}`;
+                                setVariants(copy);
+                              }}
+                              className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer"
+                            >
+                              Gerar
+                            </button>
+                          </div>
+                          <input
+                            type="text"
+                            required
+                            placeholder="Ex: ETQ-4092 ou EAN"
+                            value={v.sku}
+                            onChange={(e) => {
+                              const copy = [...variants];
+                              copy[idx].sku = e.target.value.toUpperCase();
+                              setVariants(copy);
+                            }}
+                            className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-indigo-300 font-mono"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <label className="block text-sm text-slate-400 mb-1">
+                            Qtd Inicial
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            required
+                            value={v.initialStock}
+                            onChange={(e) => {
+                              const copy = [...variants];
+                              copy[idx].initialStock = Number(e.target.value);
+                              setVariants(copy);
+                            }}
+                            className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-1 flex justify-end pt-5">
+                          {(variants.length > 1 || editingProduct) && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveVariantRow(idx)}
+                              className="p-2 text-slate-400 hover:text-rose-400 cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-2">
@@ -741,7 +1159,11 @@ export const ProductsPage: React.FC = () => {
                   disabled={submitting}
                   className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-sm font-semibold text-white cursor-pointer"
                 >
-                  {submitting ? 'Salvando...' : 'Salvar Produto'}
+                  {submitting
+                    ? 'Salvando...'
+                    : editingProduct
+                    ? 'Salvar Alterações'
+                    : 'Salvar Produto'}
                 </button>
               </div>
             </form>
@@ -787,7 +1209,9 @@ export const ProductsPage: React.FC = () => {
                 >
                   <option value="color">Nova Cor de Roupa</option>
                   <option value="size">Novo Tamanho (PP, XG, 40, 42...)</option>
-                  <option value="category">Nova Categoria (Ex: Vestidos, Calças)</option>
+                  <option value="category">
+                    Nova Categoria (Ex: Vestidos, Calças)
+                  </option>
                   <option value="supplier">Novo Fornecedor / Fábrica</option>
                 </select>
               </div>
@@ -820,7 +1244,9 @@ export const ProductsPage: React.FC = () => {
                     <input
                       type="color"
                       value={attrCodeOrHex}
-                      onChange={(e) => setAttrCodeOrHex(e.target.value.toUpperCase())}
+                      onChange={(e) =>
+                        setAttrCodeOrHex(e.target.value.toUpperCase())
+                      }
                       className="w-12 h-11 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer"
                     />
                     <input
@@ -828,7 +1254,9 @@ export const ProductsPage: React.FC = () => {
                       required
                       pattern="^#[0-9A-Fa-f]{6}$"
                       value={attrCodeOrHex}
-                      onChange={(e) => setAttrCodeOrHex(e.target.value.toUpperCase())}
+                      onChange={(e) =>
+                        setAttrCodeOrHex(e.target.value.toUpperCase())
+                      }
                       className="flex-1 px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-base text-white"
                     />
                   </div>
@@ -845,8 +1273,30 @@ export const ProductsPage: React.FC = () => {
                     required
                     maxLength={10}
                     value={attrCodeOrHex}
-                    onChange={(e) => setAttrCodeOrHex(e.target.value.toUpperCase())}
+                    onChange={(e) =>
+                      setAttrCodeOrHex(e.target.value.toUpperCase())
+                    }
                     className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-base text-white"
+                  />
+                </div>
+              )}
+
+              {attrType === 'supplier' && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-200 mb-1.5">
+                    CNPJ ou CPF do Fornecedor <span className="text-rose-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    required
+                    maxLength={18}
+                    placeholder="Ex: 12.345.678/0001-90"
+                    value={attrSupplierDocument}
+                    onChange={(e) =>
+                      setAttrSupplierDocument(formatCpfCnpjMask(e.target.value))
+                    }
+                    className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-base text-white font-mono"
                   />
                 </div>
               )}
