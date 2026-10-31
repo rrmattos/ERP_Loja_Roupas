@@ -17,10 +17,14 @@ interface AuthContextValue {
   loginDemoStore: () => Promise<void>;
   registerSandboxStore: (input: {
     storeName: string;
+    document: string;
+    phone?: string;
+    address?: string;
     ownerName: string;
     email: string;
     password: string;
   }) => Promise<void>;
+  updateTenantState: (updated: AuthTenant) => void;
   logout: () => Promise<void>;
 }
 
@@ -85,6 +89,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const registerSandboxStore = async (input: {
     storeName: string;
+    document: string;
+    phone?: string;
+    address?: string;
     ownerName: string;
     email: string;
     password: string;
@@ -96,6 +103,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setAccessToken(res.accessToken);
     setUser(res.user);
     setTenant(res.tenant);
+  };
+
+  const updateTenantState = (updated: AuthTenant) => {
+    setTenant(updated);
   };
 
   const logout = async () => {
@@ -120,6 +131,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         login,
         loginDemoStore,
         registerSandboxStore,
+        updateTenantState,
         logout,
       }}
     >

@@ -10,11 +10,26 @@ export interface AuthUser {
 export interface AuthTenant {
   id: string;
   name: string;
+  legalName?: string | null;
+  document?: string | null;
+  stateRegistration?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  logoUrl?: string | null;
   slug: string;
   isDemo: boolean;
   isSandbox: boolean;
   maxProducts: number;
   expiresAt: string | null;
+}
+
+export interface PublicStoreClient {
+  id: string;
+  name: string;
+  logoUrl: string | null;
+  address: string | null;
+  phone: string | null;
 }
 
 export interface SystemModeConfig {
@@ -38,7 +53,39 @@ export interface Supplier {
   document: string | null;
   email: string | null;
   phone: string | null;
+  address?: string | null;
   leadTimeDays: number;
+  createdAt?: string;
+  productsCount?: number;
+  entriesCount?: number;
+}
+
+export interface Customer {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  document: string | null;
+  notes: string | null;
+  createdAt: string;
+  totalOrders: number;
+  totalSpent: number;
+  lastPurchaseAt: string | null;
+}
+
+export interface Employee {
+  id: string;
+  name: string;
+  email: string;
+  phone: string | null;
+  document: string | null;
+  address?: string | null;
+  jobTitle: string;
+  role: UserRole;
+  createdAt: string;
+  salesCount: number;
+  salesRevenue: number;
+  movementsCount: number;
 }
 
 export interface Size {
@@ -116,26 +163,42 @@ export interface StockMovement {
   previousStock: number;
   newStock: number;
   unitCost: number | null;
+  invoiceNumber?: string | null;
+  tagCode?: string | null;
   reason: string | null;
   referenceChannel: SalesChannel | null;
   createdAt: string;
   variantId: string;
   sku: string;
+  barcodeEan?: string | null;
+  currentStock?: number;
   productId: string;
   productName: string;
+  productDescription?: string | null;
   productImageUrl: string | null;
+  basePrice?: number;
+  costPrice?: number;
+  categoryName?: string | null;
   sizeCode: string;
+  sizeName?: string;
   colorName: string;
   colorHex: string;
   supplierName: string | null;
+  supplierPhone?: string | null;
   orderNumber: number | null;
+  customerName?: string | null;
+  customerEmail?: string | null;
+  orderChannel?: SalesChannel | null;
+  orderTotalAmount?: number | null;
   createdByUserName: string | null;
+  orderSellerName?: string | null;
 }
 
 export interface OrderItem {
   id: string;
   variantId: string;
   sku: string;
+  barcodeEan?: string | null;
   productName: string;
   sizeCode: string;
   colorName: string;
@@ -150,14 +213,96 @@ export interface Order {
   orderNumber: number;
   channel: SalesChannel;
   status: 'PENDING' | 'PAID' | 'SHIPPED' | 'COMPLETED' | 'CANCELLED';
+  customerId?: string | null;
   customerName: string | null;
   customerEmail: string | null;
+  customerDocument?: string | null;
+  invoiceNumber?: string | null;
+  invoiceSeries?: string | null;
+  invoiceAccessKey?: string | null;
+  invoiceIssuedAt?: string | null;
   unitySessionId: string | null;
   totalAmount: number;
   notes: string | null;
   createdAt: string;
+  createdByUserId?: string | null;
   createdByUserName: string | null;
   items: OrderItem[];
+}
+
+export interface OrdersPaginatedResponse {
+  orders: Order[];
+  pagination: {
+    page: number;
+    limit: number;
+    totalItems: number;
+    totalPages: number;
+    filteredRevenue: number;
+  };
+  filterOptions: {
+    sellers: Array<{ id: string; name: string; jobTitle?: string; role: string }>;
+    customers: Array<{
+      id: string;
+      name: string;
+      phone: string | null;
+      document?: string | null;
+    }>;
+  };
+}
+
+export interface DashboardMovementItem {
+  id: string;
+  movementType: StockMovementType;
+  quantity: number;
+  previousStock: number;
+  newStock: number;
+  unitCost: number | null;
+  reason: string | null;
+  createdAt: string;
+  variantId: string;
+  sku: string;
+  currentStock: number;
+  productId: string;
+  productName: string;
+  productDescription: string | null;
+  productImageUrl: string | null;
+  basePrice: number;
+  costPrice: number;
+  categoryName: string | null;
+  sizeCode: string;
+  sizeName: string;
+  colorName: string;
+  colorHex: string;
+  supplierName: string | null;
+  supplierPhone: string | null;
+  createdByUserName: string | null;
+  orderNumber: number | null;
+  customerName: string | null;
+  customerEmail: string | null;
+  orderChannel: SalesChannel | null;
+  orderTotalAmount: number | null;
+  orderSellerName: string | null;
+}
+
+export interface DashboardLowStockItem {
+  variantId: string;
+  sku: string;
+  stockQuantity: number;
+  minStockAlert: number;
+  productId: string;
+  productName: string;
+  productDescription: string | null;
+  productImageUrl: string | null;
+  basePrice: number;
+  costPrice: number;
+  categoryName: string | null;
+  sizeCode: string;
+  sizeName: string;
+  colorName: string;
+  colorHex: string;
+  supplierName: string | null;
+  supplierPhone: string | null;
+  leadTimeDays: number | null;
 }
 
 export interface DashboardSummary {
@@ -180,30 +325,8 @@ export interface DashboardSummary {
     orders_count: number;
     revenue: number;
   }>;
-  recentMovements: Array<{
-    id: string;
-    movementType: StockMovementType;
-    quantity: number;
-    previousStock: number;
-    newStock: number;
-    reason: string | null;
-    createdAt: string;
-    sku: string;
-    productName: string;
-    sizeCode: string;
-    colorName: string;
-    colorHex: string;
-  }>;
-  lowStockAlerts: Array<{
-    variantId: string;
-    sku: string;
-    stockQuantity: number;
-    minStockAlert: number;
-    productName: string;
-    sizeCode: string;
-    colorName: string;
-    colorHex: string;
-  }>;
+  recentMovements: DashboardMovementItem[];
+  lowStockAlerts: DashboardLowStockItem[];
   unityIntegration: {
     tenantSlug: string;
     unityApiKey: string;
@@ -212,3 +335,56 @@ export interface DashboardSummary {
   };
 }
 
+export type MetricsSectionFocus =
+  | 'financial'
+  | 'inventory'
+  | 'valuation'
+  | 'products';
+
+export interface AnalyticsResponse {
+  period: string;
+  kpis: {
+    totalRevenue: number;
+    totalCogs: number;
+    grossProfit: number;
+    profitMarginPercent: number;
+    totalOrders: number;
+    averageTicket: number;
+    unitsSold: number;
+  };
+  salesByCategory: Array<{
+    categoryName: string;
+    unitsSold: number;
+    revenue: number;
+  }>;
+  salesByChannel: Array<{
+    channel: SalesChannel;
+    ordersCount: number;
+    revenue: number;
+  }>;
+  topProducts: Array<{
+    productId: string;
+    productName: string;
+    categoryName: string;
+    unitsSold: number;
+    revenue: number;
+    estimatedProfit: number;
+  }>;
+  salesBySeller: Array<{
+    sellerName: string;
+    ordersCount: number;
+    revenue: number;
+  }>;
+  movementsBreakdown: Array<{
+    movementType: StockMovementType;
+    operationsCount: number;
+    totalUnits: number;
+  }>;
+  stockValuation: Array<{
+    categoryName: string;
+    modelsCount: number;
+    unitsInStock: number;
+    costValue: number;
+    retailValue: number;
+  }>;
+}

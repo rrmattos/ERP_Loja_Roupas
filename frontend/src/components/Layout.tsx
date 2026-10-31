@@ -1,15 +1,25 @@
 import React from 'react';
 import {
   ArrowLeftRight,
+  BarChart3,
   LayoutDashboard,
   LogOut,
   Package,
+  Settings,
   ShoppingCart,
-  Store,
+  Users,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { formatCpfCnpjMask } from '../utils/formatters';
 
-export type ActivePage = 'dashboard' | 'products' | 'inventory' | 'orders';
+export type ActivePage =
+  | 'dashboard'
+  | 'metrics'
+  | 'products'
+  | 'inventory'
+  | 'orders'
+  | 'partners'
+  | 'store-profile';
 
 interface LayoutProps {
   activePage: ActivePage;
@@ -33,8 +43,14 @@ export const Layout: React.FC<LayoutProps> = ({
     {
       id: 'dashboard',
       label: 'Início / Resumo',
-      subtitle: 'Vendas, estoque e avisos',
+      subtitle: 'Visão geral do dia',
       icon: <LayoutDashboard className="w-5 h-5" />,
+    },
+    {
+      id: 'metrics',
+      label: 'Métricas e Relatórios',
+      subtitle: 'Gráficos, índices e planilhas',
+      icon: <BarChart3 className="w-5 h-5" />,
     },
     {
       id: 'products',
@@ -54,41 +70,62 @@ export const Layout: React.FC<LayoutProps> = ({
       subtitle: 'Registrar venda e histórico',
       icon: <ShoppingCart className="w-5 h-5" />,
     },
+    {
+      id: 'partners',
+      label: 'Cadastros (CPF / CNPJ)',
+      subtitle: 'Clientes, Fornecedores e Funcionários',
+      icon: <Users className="w-5 h-5" />,
+    },
   ];
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col md:flex-row">
       {/* Menu Lateral */}
-      <aside className="w-full md:w-72 bg-slate-900 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col justify-between shrink-0">
+      <aside className="w-full md:w-72 bg-slate-900 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col justify-between shrink-0 print:hidden">
         <div>
-          {/* Logo e Nome do Sistema */}
-          <div className="p-6 border-b border-slate-800 flex items-center gap-3.5">
-            <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-lg text-white shadow-md shadow-indigo-950">
-              V
-            </div>
-            <div>
-              <div className="text-base font-bold text-white tracking-tight">
-                Vértice Gestão
+          {/* Topo do Menu Lateral: Perfil e Cadastro da Loja (Clicável) */}
+          <div className="p-4 border-b border-slate-800">
+            <button
+              type="button"
+              onClick={() => onNavigate('store-profile')}
+              className={`w-full text-left p-3.5 rounded-2xl border transition flex items-center gap-3.5 cursor-pointer group ${
+                activePage === 'store-profile'
+                  ? 'bg-indigo-600/20 border-indigo-500 text-white shadow-md'
+                  : 'bg-slate-950/90 hover:bg-slate-800/80 border-slate-800 hover:border-slate-700'
+              }`}
+              title="Clique para editar o perfil, logo e CNPJ da loja"
+            >
+              {tenant?.logoUrl ? (
+                <img
+                  src={tenant.logoUrl}
+                  alt={tenant.name}
+                  className="w-12 h-12 rounded-xl object-cover border border-slate-700 shrink-0 shadow-md"
+                />
+              ) : (
+                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-600 to-amber-600 flex items-center justify-center font-bold text-xl text-white shadow-md shrink-0">
+                  {(tenant?.name || 'V').trim().charAt(0).toUpperCase()}
+                </div>
+              )}
+
+              <div className="min-w-0 flex-1">
+                <div className="text-base font-bold text-white truncate group-hover:text-amber-300 transition">
+                  {tenant?.name || 'Minha Loja'}
+                </div>
+                <div className="text-sm text-slate-400 truncate">
+                  {tenant?.document
+                    ? `Doc: ${formatCpfCnpjMask(tenant.document)}`
+                    : 'Perfil da Loja'}
+                </div>
+                <div className="text-sm text-indigo-400 font-medium flex items-center gap-1 mt-0.5">
+                  <Settings className="w-3.5 h-3.5" />
+                  <span>Editar Perfil da Loja</span>
+                </div>
               </div>
-              <div className="text-sm text-slate-400">
-                Sistema para Loja de Roupas
-              </div>
-            </div>
+            </button>
           </div>
 
-          {/* Identificação da Loja Ativa */}
-          {tenant && (
-            <div className="mx-4 mt-5 p-4 rounded-xl bg-slate-950 border border-slate-800">
-              <div className="text-sm text-slate-400 mb-1">Loja ativa:</div>
-              <div className="flex items-center gap-2 text-base font-bold text-white">
-                <Store className="w-4 h-4 text-indigo-400 shrink-0" />
-                <span className="truncate">{tenant.name}</span>
-              </div>
-            </div>
-          )}
-
           {/* Links do Menu */}
-          <nav className="p-4 space-y-2 mt-2">
+          <nav className="p-4 space-y-1.5 mt-1">
             {navItems.map((item) => {
               const active = activePage === item.id;
               return (
@@ -114,7 +151,7 @@ export const Layout: React.FC<LayoutProps> = ({
                       {item.label}
                     </div>
                     <div
-                      className={`text-sm truncate ${
+                      className={`text-sm leading-snug ${
                         active ? 'text-indigo-200' : 'text-slate-400'
                       }`}
                     >
