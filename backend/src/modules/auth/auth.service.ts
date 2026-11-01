@@ -96,7 +96,7 @@ export class AuthService {
 
     const user = userQuery.rows[0];
 
-    if (!user || !user.active || !user.tenant_active) {
+    if (!user || !user.active || !user.tenant_active || (user.expires_at !== null && new Date(user.expires_at) <= new Date())) {
       logger.securityAuthFail(params.ip, 'USER_NOT_FOUND_OR_INACTIVE', emailNormalized);
       throw new AppError('Credenciais inválidas', 401, 'INVALID_CREDENTIALS');
     }
@@ -186,8 +186,8 @@ export class AuthService {
          t.is_demo, t.is_sandbox, t.max_products, t.expires_at
        FROM tenants t
        INNER JOIN users u ON u.tenant_id = t.id
-       WHERE t.is_demo = TRUE AND t.active = TRUE
-       ORDER BY u.created_at ASC
+       WHERE t.is_demo = TRUE AND t.active = TRUE AND u.active = TRUE AND u.role IN ('OWNER', 'ADMIN')
+       ORDER BY CASE u.role WHEN 'OWNER' THEN 0 ELSE 1 END, u.created_at ASC
        LIMIT 1`
     );
 
@@ -266,7 +266,7 @@ export class AuthService {
           params.phone?.trim() || null,
           params.address?.trim() || null,
           uniqueSlug,
-          env.SANDBOX_TTL_HOURS ? env.SANDBOX_MAX_PRODUCTS : 15,
+          env.SANDBOX_MAX_PRODUCTS,
           unityApiKey,
           String(env.SANDBOX_TTL_HOURS),
         ]
@@ -289,21 +289,6 @@ export class AuthService {
           emailNormalized,
           params.document.trim(),
           params.phone?.trim() || null,
-          passwordHash,
-        ]
-      );
-
-      const shortTenant = tenant.id.slice(0, 8);
-      await client.query(
-        `INSERT INTO users (tenant_id, name, email, phone, document, job_title, password_hash, role)
-         VALUES
-           ($1, 'Beatriz Santos', $2, '(11) 99223-3445', '234.567.890-11', 'Vendedora', $4, 'STAFF'),
-           ($1, 'Diego Ferreira', $3, '(11) 99334-4556', '345.678.901-22', 'Vendedor / Caixa', $4, 'STAFF')
-         ON CONFLICT (tenant_id, email) DO NOTHING`,
-        [
-          tenant.id,
-          `beatriz.${shortTenant}@loja.com`,
-          `diego.${shortTenant}@loja.com`,
           passwordHash,
         ]
       );
@@ -392,7 +377,7 @@ export class AuthService {
          t.is_demo, t.is_sandbox, t.max_products, t.expires_at
        FROM users u
        INNER JOIN tenants t ON t.id = u.tenant_id
-       WHERE u.id = $1 AND u.active = TRUE AND t.active = TRUE
+       WHERE u.id = $1 AND u.active = TRUE AND t.active = TRUE AND (t.expires_at IS NULL OR t.expires_at > NOW())
        LIMIT 1`,
       [payload.sub]
     );

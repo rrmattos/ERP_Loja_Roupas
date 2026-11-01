@@ -35,6 +35,10 @@ DECLARE
     v_order_demo UUID;
     v_order_pos UUID;
 BEGIN
+    -- Seeds nunca populam lojas comerciais/oficiais.
+    IF NOT EXISTS (SELECT 1 FROM tenants WHERE id = p_tenant_id AND (is_demo OR is_sandbox)) THEN
+        RETURN;
+    END IF;
     SELECT id INTO v_owner_user FROM users WHERE tenant_id = p_tenant_id ORDER BY created_at ASC LIMIT 1;
 
     -- 0. Funcionários / Vendedores Padrão da Loja
@@ -46,7 +50,7 @@ BEGIN
         '(11) 99223-3445',
         '234.567.890-11',
         'Vendedora',
-        '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy',
+        crypt(encode(gen_random_bytes(32), 'hex'), gen_salt('bf', 10)),
         'STAFF'
     )
     ON CONFLICT (tenant_id, email) DO UPDATE SET name = EXCLUDED.name
@@ -60,7 +64,7 @@ BEGIN
         '(11) 99334-4556',
         '345.678.901-22',
         'Vendedor / Caixa',
-        '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy',
+        crypt(encode(gen_random_bytes(32), 'hex'), gen_salt('bf', 10)),
         'STAFF'
     )
     ON CONFLICT (tenant_id, email) DO UPDATE SET name = EXCLUDED.name

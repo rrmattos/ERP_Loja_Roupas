@@ -4,9 +4,11 @@ import { logger } from '../shared/utils/logger';
 
 export const dbPool = new Pool({
   connectionString: env.DATABASE_URL,
-  max: 10, // Pool enxuto para preservar memória na VPS de 1GB RAM
+  max: 5, // VPS compartilhada com outros serviços
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
+  statement_timeout: 10000,
+  idle_in_transaction_session_timeout: 15000,
 });
 
 dbPool.on('error', (err) => {
@@ -56,3 +58,11 @@ export async function checkDatabaseConnection(): Promise<boolean> {
   }
 }
 
+
+/** Serializa gravações de uma loja, incluindo referências de uploads e cotas. */
+export function withTenantTransaction<T>(tenantId: string, callback: (client: PoolClient) => Promise<T>): Promise<T> {
+  return withTransaction(async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [tenantId]);
+    return callback(client);
+  });
+}

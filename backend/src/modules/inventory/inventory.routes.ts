@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query, withTransaction } from '../../config/database';
 import { AppError } from '../../shared/errors/AppError';
 import { requireAuth } from '../../shared/middlewares/auth.middleware';
+import { profanityFilter } from '../../shared/middlewares/profanityFilter';
 
 export const inventoryRouter = Router();
 
@@ -153,7 +154,7 @@ inventoryRouter.get('/low-stock', async (req, res, next) => {
  * Registra Entrada de Fornecedor (Compra), Devolução de Cliente (exigindo NF), Entrada Manual ou Baixa por Defeito
  * utilizando Lock Transacional (SELECT ... FOR UPDATE)
  */
-inventoryRouter.post('/movements', async (req, res, next) => {
+inventoryRouter.post('/movements', profanityFilter('reason'), async (req, res, next) => {
   try {
     const { tenantId, userId } = req.auth!;
     const body = createMovementSchema.parse(req.body);

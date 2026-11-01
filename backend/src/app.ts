@@ -49,14 +49,14 @@ app.use(
   })
 );
 
-// 3. Limite estrito de tamanho de payload JSON (4MB para suportar upload WebP comprimido de imagens de até 3MB) + Cookies + HPP
-app.use(express.json({ limit: '4mb' }));
+// Limita requisições antes de alocar os buffers dos parsers.
+app.use('/api', globalRateLimiter);
+
+// JSON comporta imagem de 2 MiB em Base64 e metadados.
+app.use(express.json({ limit: '3mb' }));
 app.use(express.urlencoded({ extended: false, limit: '50kb' }));
 app.use(cookieParser());
 app.use(hpp());
-
-// 4. Rate Limiting global
-app.use('/api', globalRateLimiter);
 
 // 5. Servir imagens de upload estáticas com proteção nosniff
 const uploadsPath = path.resolve(process.cwd(), 'uploads');

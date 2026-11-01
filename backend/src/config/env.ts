@@ -16,7 +16,15 @@ const envSchema = z.object({
   UNITY_DEFAULT_API_KEY: z.string().min(16, 'UNITY_DEFAULT_API_KEY deve ter no mínimo 16 caracteres no arquivo .env'),
   SANDBOX_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   SANDBOX_MAX_PRODUCTS: z.coerce.number().int().min(2).max(100).default(15),
-  MAX_UPLOAD_SIZE_KB: z.coerce.number().int().min(50).max(3072).default(3072),
+  MAX_UPLOAD_SIZE_KB: z.coerce.number().int().min(50).max(2048).default(2048),
+}).superRefine((value, ctx) => {
+  if (value.NODE_ENV !== 'development' && !process.env.CORS_ORIGIN?.trim()) {
+    ctx.addIssue({ code: 'custom', path: ['CORS_ORIGIN'], message: 'Defina explicitamente as origens permitidas neste ambiente.' });
+  }
+  for (const origin of value.CORS_ORIGIN.split(',')) {
+    try { const url = new URL(origin.trim()); if (!['http:', 'https:'].includes(url.protocol) || url.origin !== origin.trim()) throw new Error(); }
+    catch { ctx.addIssue({ code: 'custom', path: ['CORS_ORIGIN'], message: 'Origem CORS inválida.' }); }
+  }
 });
 
 const parsedEnv = envSchema.safeParse(process.env);

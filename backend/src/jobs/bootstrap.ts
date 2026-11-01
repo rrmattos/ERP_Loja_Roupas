@@ -1,5 +1,7 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
+import fs from 'fs/promises';
+import path from 'path';
 import { withTransaction } from '../config/database';
 import { env } from '../config/env';
 import { logger } from '../shared/utils/logger';
@@ -11,6 +13,12 @@ import { logger } from '../shared/utils/logger';
  * 3. A Loja Demonstração Pública (quando APP_MODE=portfolio_sandbox)
  */
 export async function bootstrapInitialTenants(): Promise<void> {
+  let catalogSql: string;
+  try { catalogSql = await fs.readFile(path.resolve(process.cwd(), 'database/init/02_seed.sql'), 'utf8'); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    catalogSql = await fs.readFile(path.resolve(process.cwd(), '../database/init/02_seed.sql'), 'utf8');
+  }
   await withTransaction(async (client) => {
     // 0. Garante que a tabela de Clientes (customers) e a coluna customer_id em orders existam
     await client.query(`
@@ -53,6 +61,8 @@ export async function bootstrapInitialTenants(): Promise<void> {
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS logo_url TEXT NULL;
     `);
 
+    await client.query(catalogSql);
+
     // Preenche dados fiscais e cadastrais padrão nas lojas existentes que ainda não possuem CNPJ/Endereço
     await client.query(`
       UPDATE tenants
@@ -62,17 +72,18 @@ export async function bootstrapInitialTenants(): Promise<void> {
           email = COALESCE(email, CASE WHEN is_demo THEN 'contato@lojademo.com.br' ELSE 'atendimento@verticemoda.com.br' END),
           phone = REGEXP_REPLACE(COALESCE(phone, '1134567890'), '\\D', '', 'g'),
           address = COALESCE(address, 'Rua Oscar Freire, 840 - Jardim Paulista | São Paulo - SP | CEP: 01426-000')
-      WHERE document IS NULL OR document LIKE '%.%';
+      WHERE (is_demo OR is_sandbox) AND (document IS NULL OR document LIKE '%.%');
 
       UPDATE suppliers
       SET document = REGEXP_REPLACE(document, '\\D', '', 'g'),
           phone = REGEXP_REPLACE(phone, '\\D', '', 'g'),
           address = COALESCE(address, 'Rua Ribeiro de Lima, 450 - Bom Retiro | São Paulo - SP | CEP: 01122-000')
-      WHERE document IS NOT NULL OR address IS NULL;
+      WHERE tenant_id IN (SELECT id FROM tenants WHERE is_demo OR is_sandbox) AND (document IS NOT NULL OR address IS NULL);
 
       UPDATE customers
       SET document = CASE WHEN document IS NOT NULL THEN REGEXP_REPLACE(document, '\\D', '', 'g') ELSE NULL END,
-          phone = CASE WHEN phone IS NOT NULL THEN REGEXP_REPLACE(phone, '\\D', '', 'g') ELSE NULL END;
+          phone = CASE WHEN phone IS NOT NULL THEN REGEXP_REPLACE(phone, '\\D', '', 'g') ELSE NULL END
+      WHERE tenant_id IN (SELECT id FROM tenants WHERE is_demo OR is_sandbox);
     `);
 
     // Atualiza nomes genéricos antigos de demonstração para nome real de funcionária/gerente
@@ -83,21 +94,31 @@ export async function bootstrapInitialTenants(): Promise<void> {
           document = REGEXP_REPLACE(COALESCE(document, '12345678900'), '\\D', '', 'g'),
           phone = REGEXP_REPLACE(COALESCE(phone, '11991122334'), '\\D', '', 'g'),
           address = COALESCE(address, 'Rua Augusta, 1500 - Consolação | São Paulo - SP | CEP: 01304-001')
-      WHERE name ILIKE '%Visitante%' OR name ILIKE '%Loja Demo%';
+      WHERE tenant_id IN (SELECT id FROM tenants WHERE is_demo OR is_sandbox) AND (name ILIKE '%Visitante%' OR name ILIKE '%Loja Demo%');
 
       UPDATE users
       SET job_title = 'Proprietário / Gerente',
           document = REGEXP_REPLACE(COALESCE(document, '11122233344'), '\\D', '', 'g'),
           phone = REGEXP_REPLACE(COALESCE(phone, '11990001122'), '\\D', '', 'g'),
           address = COALESCE(address, 'Av. Paulista, 1000 - Bela Vista | São Paulo - SP | CEP: 01310-100')
-      WHERE role = 'OWNER' AND (job_title IS NULL OR job_title = 'Vendedor(a)' OR document LIKE '%.%');
+      WHERE tenant_id IN (SELECT id FROM tenants WHERE is_demo OR is_sandbox) AND role = 'OWNER' AND (job_title IS NULL OR job_title = 'Vendedor(a)' OR document LIKE '%.%');
 
       UPDATE users
       SET document = REGEXP_REPLACE(document, '\\D', '', 'g'),
           phone = REGEXP_REPLACE(phone, '\\D', '', 'g'),
           address = COALESCE(address, 'Rua Frei Caneca, 500 - Consolação | São Paulo - SP | CEP: 01307-000')
-      WHERE document IS NOT NULL;
+      WHERE tenant_id IN (SELECT id FROM tenants WHERE is_demo OR is_sandbox) AND document IS NOT NULL;
     `);
+
+    // Rotação direcionada de credenciais legadas conhecidas, sem excluir contas.
+    const legacy = await client.query<{ id: string }>(`SELECT id FROM users
+      WHERE role = 'STAFF' AND password_hash = $1
+      AND email IN ('beatriz.' || LEFT(tenant_id::text, 8) || '@loja.com', 'diego.' || LEFT(tenant_id::text, 8) || '@loja.com')`,
+      ['$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy']);
+    for (const user of legacy.rows) {
+      await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10), user.id]);
+      await client.query('UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL', [user.id]);
+    }
 
     // 1. Loja Oficial (Admin Master)
     const masterTenantRes = await client.query<{ id: string }>(
@@ -122,7 +143,7 @@ export async function bootstrapInitialTenants(): Promise<void> {
         [masterTenantId, env.ADMIN_EMAIL.toLowerCase(), adminHash]
       );
 
-      await client.query(`SELECT seed_tenant_catalog($1, TRUE)`, [masterTenantId]);
+
       logger.info('Loja Oficial (Master) inicializada com sucesso.');
     }
 
@@ -156,7 +177,7 @@ export async function bootstrapInitialTenants(): Promise<void> {
     }
 
     // 3. Popula clientes padrão em lojas já existentes que ainda não tenham clientes
-    const existingTenants = await client.query<{ id: string }>(`SELECT id FROM tenants`);
+    const existingTenants = await client.query<{ id: string }>(`SELECT id FROM tenants WHERE is_demo OR is_sandbox`);
     for (const t of existingTenants.rows) {
       const custCount = await client.query<{ count: string }>(
         `SELECT COUNT(*) AS count FROM customers WHERE tenant_id = $1`,
@@ -179,8 +200,8 @@ export async function bootstrapInitialTenants(): Promise<void> {
       );
       const shortTenant = t.id.slice(0, 8);
       if (Number(empCount.rows[0]?.count ?? 0) < 3) {
-        const defaultStaffHash =
-          '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+        const defaultStaffHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+        const secondStaffHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
         const beatrizRes = await client.query<{ id: string }>(
           `INSERT INTO users (tenant_id, name, email, phone, document, job_title, password_hash, role)
            VALUES ($1, 'Beatriz Santos', $2, '(11) 99223-3445', '234.567.890-11', 'Vendedora', $3, 'STAFF')
@@ -193,7 +214,7 @@ export async function bootstrapInitialTenants(): Promise<void> {
            VALUES ($1, 'Diego Ferreira', $2, '(11) 99334-4556', '345.678.901-22', 'Vendedor / Caixa', $3, 'STAFF')
            ON CONFLICT (tenant_id, email) DO UPDATE SET name = EXCLUDED.name
            RETURNING id`,
-          [t.id, `diego.${shortTenant}@loja.com`, defaultStaffHash]
+          [t.id, `diego.${shortTenant}@loja.com`, secondStaffHash]
         );
 
         const beatrizId = beatrizRes.rows[0]?.id;

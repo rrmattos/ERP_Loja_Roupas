@@ -1,11 +1,14 @@
 import crypto from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
-import { query, withTransaction } from '../../config/database';
+import { query, withTenantTransaction } from '../../config/database';
 import { AppError } from '../../shared/errors/AppError';
 import { requireAuth } from '../../shared/middlewares/auth.middleware';
+import { profanityFilter } from '../../shared/middlewares/profanityFilter';
 import {
   PRESET_GALLERY_IMAGES,
+  getOwnedUpload,
+  OwnedUpload,
   processProductImage,
   removeCustomUploadIfExists,
 } from '../../shared/utils/imageUpload';
@@ -115,6 +118,30 @@ const updateProductSchema = z.object({
   newVariants: z.array(variantInputSchema).optional().default([]),
 });
 
+
+async function validateProductReferences(client: import('pg').PoolClient, tenantId: string,
+  body: { categoryId?: string | null; supplierId?: string | null; variants?: Array<{ sizeId: string; colorId: string }>; newVariants?: Array<{ sizeId: string; colorId: string }>; existingVariants?: Array<{ id: string }> }, productId?: string): Promise<void> {
+  const variants = body.variants ?? body.newVariants ?? [];
+  const checks: Array<[string, string[], string]> = [
+    ['categories', body.categoryId ? [body.categoryId] : [], 'categoria'],
+    ['suppliers', body.supplierId ? [body.supplierId] : [], 'fornecedor'],
+    ['sizes', variants.map(v => v.sizeId), 'tamanho'],
+    ['colors', variants.map(v => v.colorId), 'cor'],
+  ];
+  for (const [table, values, label] of checks) {
+    const ids = [...new Set(values)];
+    if (!ids.length) continue;
+    // table vem exclusivamente da lista fixa acima.
+    const result = await client.query(`SELECT id FROM ${table} WHERE tenant_id = $1 AND id = ANY($2::uuid[]) FOR SHARE`, [tenantId, ids]);
+    if (result.rowCount !== ids.length) throw new AppError(`Referência de ${label} inválida para esta loja.`, 422, 'INVALID_TENANT_REFERENCE');
+  }
+  const ids = [...new Set(body.existingVariants?.map(v => v.id) ?? [])];
+  if (ids.length) {
+    const result = await client.query('SELECT id FROM product_variants WHERE tenant_id = $1 AND product_id = $2 AND id = ANY($3::uuid[]) FOR UPDATE', [tenantId, productId, ids]);
+    if (result.rowCount !== ids.length) throw new AppError('Variação inválida para este produto.', 422, 'INVALID_TENANT_REFERENCE');
+  }
+}
+
 /**
  * GET /api/v1/products/metadata
  * Retorna categorias, fornecedores, tamanhos, cores, galeria de fotos prontas e limite do Tenant
@@ -173,7 +200,7 @@ productsRouter.get('/metadata', async (req, res, next) => {
 /**
  * POST /api/v1/products/attributes/categories
  */
-productsRouter.post('/attributes/categories', async (req, res, next) => {
+productsRouter.post('/attributes/categories', profanityFilter('name', 'description'), async (req, res, next) => {
   try {
     const { tenantId } = req.auth!;
     const body = createCategorySchema.parse(req.body);
@@ -195,7 +222,7 @@ productsRouter.post('/attributes/categories', async (req, res, next) => {
 /**
  * POST /api/v1/products/attributes/suppliers
  */
-productsRouter.post('/attributes/suppliers', async (req, res, next) => {
+productsRouter.post('/attributes/suppliers', profanityFilter('name', 'description'), async (req, res, next) => {
   try {
     const { tenantId } = req.auth!;
     const body = createSupplierSchema.parse(req.body);
@@ -223,7 +250,7 @@ productsRouter.post('/attributes/suppliers', async (req, res, next) => {
 /**
  * POST /api/v1/products/attributes/sizes
  */
-productsRouter.post('/attributes/sizes', async (req, res, next) => {
+productsRouter.post('/attributes/sizes', profanityFilter('name'), async (req, res, next) => {
   try {
     const { tenantId } = req.auth!;
     const body = createSizeSchema.parse(req.body);
@@ -244,7 +271,7 @@ productsRouter.post('/attributes/sizes', async (req, res, next) => {
 /**
  * POST /api/v1/products/attributes/colors
  */
-productsRouter.post('/attributes/colors', async (req, res, next) => {
+productsRouter.post('/attributes/colors', profanityFilter('name'), async (req, res, next) => {
   try {
     const { tenantId } = req.auth!;
     const body = createColorSchema.parse(req.body);
@@ -312,11 +339,11 @@ productsRouter.get('/', async (req, res, next) => {
            '[]'::json
          ) AS variants
        FROM products p
-       LEFT JOIN categories c ON c.id = p.category_id
-       LEFT JOIN suppliers sup ON sup.id = p.supplier_id
+       LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+       LEFT JOIN suppliers sup ON sup.id = p.supplier_id AND sup.tenant_id = p.tenant_id
        LEFT JOIN product_variants pv ON pv.product_id = p.id AND pv.tenant_id = p.tenant_id
-       LEFT JOIN sizes s ON s.id = pv.size_id
-       LEFT JOIN colors col ON col.id = pv.color_id
+       LEFT JOIN sizes s ON s.id = pv.size_id AND s.tenant_id = pv.tenant_id
+       LEFT JOIN colors col ON col.id = pv.color_id AND col.tenant_id = pv.tenant_id
        WHERE p.tenant_id = $1
        GROUP BY p.id, c.name, sup.name
        ORDER BY p.created_at DESC`,
@@ -334,43 +361,45 @@ productsRouter.get('/', async (req, res, next) => {
  * Cria um Produto + Matriz de Variações (SKUs) + Saldo Inicial no Livro-Razão
  * Respeita a cota máxima de produtos da loja (ex: 15 produtos no Sandbox)
  */
-productsRouter.post('/', async (req, res, next) => {
-  let uploadedImageUrl: string | null = null;
-  let isCustom = false;
+productsRouter.post('/', profanityFilter('name', 'description'), async (req, res, next) => {
+  let createdUpload: OwnedUpload | null = null;
 
   try {
     const { tenantId, userId } = req.auth!;
     const body = createProductSchema.parse(req.body);
 
-    // 1. Verifica limite de produtos do Tenant (Proteção de Disco/Banco na VPS)
-    const quotaCheck = await query<{ current_count: string; max_products: number }>(
-      `SELECT
+    const createdProduct = await withTenantTransaction(tenantId, async client => {
+      await validateProductReferences(client, tenantId, body);
+      // 1. Verifica limite de produtos do Tenant (Proteção de Disco/Banco na VPS)
+      const quotaCheck = await client.query<{ current_count: string; max_products: number }>(
+        `SELECT
          (SELECT COUNT(*) FROM products WHERE tenant_id = $1) AS current_count,
          t.max_products
        FROM tenants t WHERE t.id = $1`,
-      [tenantId]
-    );
-
-    const currentCount = Number(quotaCheck.rows[0]?.current_count ?? 0);
-    const maxProducts = quotaCheck.rows[0]?.max_products ?? 15;
-
-    if (currentCount >= maxProducts) {
-      throw new AppError(
-        `Limite de ${maxProducts} produtos atingido para esta loja de demonstração/teste. Exclua um produto existente para cadastrar outro.`,
-        403,
-        'PRODUCT_QUOTA_EXCEEDED'
+        [tenantId]
       );
-    }
 
-    // 2. Processa imagem (Preset ou Upload Base64 WebP/PNG/JPG validado por Magic Bytes)
-    const processedImg = await processProductImage(body.imageInput, tenantId);
-    uploadedImageUrl = processedImg.imageUrl;
-    isCustom = processedImg.isCustomUpload;
+      const currentCount = Number(quotaCheck.rows[0]?.current_count ?? 0);
+      const maxProducts = quotaCheck.rows[0]?.max_products ?? 15;
 
-    const baseSlug = slugify(body.name) || 'produto';
-    const uniqueSlug = `${baseSlug}-${crypto.randomBytes(2).toString('hex')}`;
+      if (currentCount >= maxProducts) {
+        throw new AppError(
+          `Limite de ${maxProducts} produtos atingido para esta loja de demonstração/teste. Exclua um produto existente para cadastrar outro.`,
+          403,
+          'PRODUCT_QUOTA_EXCEEDED'
+        );
+      }
 
-    const createdProduct = await withTransaction(async (client) => {
+      // 2. Processa imagem (Preset ou Upload Base64 WebP/PNG/JPG validado por Magic Bytes)
+      const processedImg = await processProductImage(body.imageInput, tenantId, client);
+      const uploadedImageUrl = processedImg.imageUrl;
+      const isCustom = processedImg.isCustomUpload;
+      createdUpload = processedImg.createdUpload;
+
+      const baseSlug = slugify(body.name) || 'produto';
+      const uniqueSlug = `${baseSlug}-${crypto.randomBytes(2).toString('hex')}`;
+
+
       const prodRes = await client.query<{ id: string }>(
         `INSERT INTO products (
            tenant_id, category_id, supplier_id, name, slug, description,
@@ -446,9 +475,7 @@ productsRouter.post('/', async (req, res, next) => {
       productId: createdProduct.id,
     });
   } catch (error) {
-    if (isCustom && uploadedImageUrl) {
-      await removeCustomUploadIfExists(uploadedImageUrl);
-    }
+    await removeCustomUploadIfExists(createdUpload);
     next(error);
   }
 });
@@ -457,43 +484,46 @@ productsRouter.post('/', async (req, res, next) => {
  * PUT /api/v1/products/:id
  * Atualiza dados do produto, substitui imagem limpando a antiga do disco e permite adicionar novas variações
  */
-productsRouter.put('/:id', async (req, res, next) => {
+productsRouter.put('/:id', profanityFilter('name', 'description'), async (req, res, next) => {
+  let createdUpload: OwnedUpload | null = null;
   try {
     const { tenantId, userId } = req.auth!;
-    const productId = req.params.id;
+    const productId = z.string().uuid().parse(req.params.id);
     const body = updateProductSchema.parse(req.body);
 
-    const existingRes = await query<{
-      id: string;
-      image_url: string | null;
-      is_custom_upload: boolean;
-    }>(
-      `SELECT id, image_url, is_custom_upload
+    const oldUpload = await withTenantTransaction(tenantId, async client => {
+      await validateProductReferences(client, tenantId, body, productId);
+      const existingRes = await client.query<{
+        id: string;
+        image_url: string | null;
+        is_custom_upload: boolean;
+      }>(
+        `SELECT id, image_url, is_custom_upload
        FROM products
        WHERE id = $1 AND tenant_id = $2
        LIMIT 1`,
-      [productId, tenantId]
-    );
+        [productId, tenantId]
+      );
 
-    const existing = existingRes.rows[0];
-    if (!existing) {
-      throw new AppError('Produto não encontrado.', 404, 'PRODUCT_NOT_FOUND');
-    }
-
-    let finalImageUrl = existing.image_url;
-    let finalIsCustom = existing.is_custom_upload;
-
-    if (body.imageInput && body.imageInput !== existing.image_url) {
-      const processed = await processProductImage(body.imageInput, tenantId);
-      finalImageUrl = processed.imageUrl;
-      finalIsCustom = processed.isCustomUpload;
-
-      if (existing.is_custom_upload && existing.image_url) {
-        await removeCustomUploadIfExists(existing.image_url);
+      const existing = existingRes.rows[0];
+      if (!existing) {
+        throw new AppError('Produto não encontrado.', 404, 'PRODUCT_NOT_FOUND');
       }
-    }
 
-    await withTransaction(async (client) => {
+      const oldUpload = await getOwnedUpload(existing.image_url, tenantId, client);
+      let finalImageUrl = existing.image_url;
+      let finalIsCustom = existing.is_custom_upload;
+
+      if (body.imageInput && body.imageInput !== existing.image_url) {
+        const processed = await processProductImage(body.imageInput, tenantId, client);
+        createdUpload = processed.createdUpload;
+        finalImageUrl = processed.imageUrl;
+        finalIsCustom = processed.isCustomUpload;
+
+
+      }
+
+
       await client.query(
         `UPDATE products
          SET name = $1,
@@ -574,10 +604,13 @@ productsRouter.put('/:id', async (req, res, next) => {
           );
         }
       }
+      return finalImageUrl !== existing.image_url ? oldUpload : null;
     });
+    await removeCustomUploadIfExists(oldUpload);
 
     res.json({ status: 'success' });
   } catch (error) {
+    await removeCustomUploadIfExists(createdUpload);
     next(error);
   }
 });
@@ -588,67 +621,22 @@ productsRouter.put('/:id', async (req, res, next) => {
  */
 productsRouter.delete('/:id', async (req, res, next) => {
   try {
-    const { tenantId } = req.auth!;
-    const productId = req.params.id;
-
-    const prodRes = await query<{
-      id: string;
-      image_url: string | null;
-      is_custom_upload: boolean;
-    }>(
-      `SELECT id, image_url, is_custom_upload
-       FROM products
-       WHERE id = $1 AND tenant_id = $2
-       LIMIT 1`,
-      [productId, tenantId]
-    );
-
-    const product = prodRes.rows[0];
-    if (!product) {
-      throw new AppError('Produto não encontrado.', 404, 'PRODUCT_NOT_FOUND');
-    }
-
-    // Verifica se alguma variação deste produto já teve vendas registradas em order_items
-    const hasSalesRes = await query<{ count: string }>(
-      `SELECT COUNT(*) AS count
-       FROM order_items oi
-       INNER JOIN product_variants pv ON pv.id = oi.variant_id
-       WHERE pv.product_id = $1 AND oi.tenant_id = $2`,
-      [productId, tenantId]
-    );
-
-    const hasSales = Number(hasSalesRes.rows[0]?.count ?? 0) > 0;
-
-    if (hasSales) {
-      // Se já tem pedidos históricos, removemos primero os itens de pedido caso seja loja de teste/demo,
-      // ou excluímos em cascata para permitir liberar a cota de 15 produtos no portfólio:
-      await withTransaction(async (client) => {
-        await client.query(
-          `DELETE FROM order_items
-           WHERE tenant_id = $1 AND variant_id IN (
-             SELECT id FROM product_variants WHERE product_id = $2 AND tenant_id = $1
-           )`,
-          [tenantId, productId]
-        );
-        await client.query(`DELETE FROM products WHERE id = $1 AND tenant_id = $2`, [
-          productId,
-          tenantId,
-        ]);
-      });
-    } else {
-      await query(`DELETE FROM products WHERE id = $1 AND tenant_id = $2`, [
-        productId,
-        tenantId,
-      ]);
-    }
-
-    if (product.is_custom_upload && product.image_url) {
-      await removeCustomUploadIfExists(product.image_url);
-    }
-
+    const { tenantId, isDemo, isSandbox } = req.auth!;
+    const productId = z.string().uuid().parse(req.params.id);
+    const upload = await withTenantTransaction(tenantId, async client => {
+      const result = await client.query<{ image_url: string | null }>('SELECT image_url FROM products WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [productId, tenantId]);
+      if (!result.rows[0]) throw new AppError('Produto não encontrado.', 404, 'PRODUCT_NOT_FOUND');
+      const owned = await getOwnedUpload(result.rows[0].image_url, tenantId, client);
+      const sales = await client.query('SELECT 1 FROM order_items oi JOIN product_variants pv ON pv.id = oi.variant_id AND pv.tenant_id = oi.tenant_id WHERE pv.product_id = $1 AND oi.tenant_id = $2 LIMIT 1', [productId, tenantId]);
+      if (sales.rowCount && !isDemo && !isSandbox) {
+        await client.query('UPDATE products SET active = FALSE WHERE id = $1 AND tenant_id = $2', [productId, tenantId]);
+        return null;
+      }
+      await client.query('DELETE FROM order_items WHERE tenant_id = $1 AND variant_id IN (SELECT id FROM product_variants WHERE product_id = $2 AND tenant_id = $1)', [tenantId, productId]);
+      await client.query('DELETE FROM products WHERE id = $1 AND tenant_id = $2', [productId, tenantId]);
+      return owned;
+    });
+    await removeCustomUploadIfExists(upload);
     res.status(204).send();
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { next(error); }
 });
-

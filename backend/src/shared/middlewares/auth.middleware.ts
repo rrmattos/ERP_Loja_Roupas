@@ -57,18 +57,17 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
  * Middleware RBAC (Role-Based Access Control)
  */
 export function requireRole(...allowedRoles: UserRole[]) {
-  return (req: Request, _res: Response, next: NextFunction): void => {
-    if (!req.auth) {
-      return next(new AppError('Não autenticado', 401, 'UNAUTHORIZED'));
-    }
-
-    if (!allowedRoles.includes(req.auth.role)) {
-      return next(
-        new AppError('Permissão insuficiente para executar esta operação', 403, 'FORBIDDEN')
-      );
-    }
-
-    next();
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.auth) throw new AppError('Não autenticado.', 401, 'UNAUTHORIZED');
+      const current = await query<{ role: UserRole }>(`SELECT u.role FROM users u
+        JOIN tenants t ON t.id = u.tenant_id WHERE u.id = $1 AND u.tenant_id = $2
+        AND u.active = TRUE AND t.active = TRUE AND (t.expires_at IS NULL OR t.expires_at > NOW())`, [req.auth.userId, req.auth.tenantId]);
+      const role = current.rows[0]?.role;
+      if (!role || !allowedRoles.includes(role)) throw new AppError('Permissão insuficiente.', 403, 'FORBIDDEN');
+      req.auth.role = role;
+      next();
+    } catch (error) { next(error); }
   };
 }
 

@@ -30,19 +30,24 @@ async function startServer(): Promise<void> {
     });
   });
 
-  // Graceful Shutdown para deploys seguros no Docker Compose
-  const shutdown = async (signal: string) => {
-    logger.info(`Sinal ${signal} recebido. Encerrando servidor com segurança...`);
-    server.close(async () => {
-      await dbPool.end();
-      logger.info('Pool de conexões PostgreSQL encerrado.');
-      process.exit(0);
+  let stopping = false;
+  const shutdown = (signal: string) => {
+    if (stopping) return;
+    stopping = true;
+    logger.info('Encerrando servidor', { signal });
+    const deadline = setTimeout(() => { server.closeAllConnections(); process.exit(1); }, 10000);
+    deadline.unref();
+    server.close(() => {
+      void dbPool.end().then(() => { clearTimeout(deadline); process.exit(0); })
+        .catch(error => { logger.error('Falha ao encerrar banco', { error: String(error) }); process.exit(1); });
     });
   };
-
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  process.on('SIGINT', () => void shutdown('SIGINT'));
+  server.on('error', error => { logger.error('Falha no servidor HTTP', { error: String(error) }); shutdown('HTTP_ERROR'); });
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-void startServer();
-
+void startServer().catch(async error => {
+  logger.error('Falha na inicialização', { error: String(error) });
+  try { await dbPool.end(); } finally { process.exit(1); }
+});

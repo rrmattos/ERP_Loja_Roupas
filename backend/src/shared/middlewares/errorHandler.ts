@@ -10,6 +10,17 @@ export function errorHandler(
   res: Response,
   _next: NextFunction
 ): void {
+  if (res.headersSent) { _next(err); return; }
+  const type = (err as { type?: string } | null)?.type;
+  if (type === 'entity.too.large' || type === 'entity.parse.failed') {
+    res.status(type === 'entity.too.large' ? 413 : 400).json({
+      status: 'error',
+      code: type === 'entity.too.large' ? 'PAYLOAD_TOO_LARGE' : 'INVALID_JSON',
+      message: type === 'entity.too.large' ? 'Corpo da requisição excede 3 MiB.' : 'JSON inválido.'
+    });
+    return;
+  }
+
   if (err instanceof AppError) {
     res.status(err.statusCode).json({
       status: 'error',
@@ -46,6 +57,10 @@ export function errorHandler(
   // Tratamento seguro de violações de integridade do PostgreSQL
   if (typeof err === 'object' && err !== null && 'code' in err) {
     const pgCode = (err as { code?: string }).code;
+    if (pgCode === '57014' || pgCode === '55P03' || pgCode === '25P03') {
+      res.status(503).json({ status: 'error', code: 'DATABASE_TIMEOUT', message: 'Operação demorou demais. Tente novamente.' });
+      return;
+    }
     if (pgCode === '23505') {
       res.status(409).json({
         status: 'error',

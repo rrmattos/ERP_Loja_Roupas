@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { query, withTransaction } from '../../config/database';
 import { AppError } from '../../shared/errors/AppError';
 import { requireAuth } from '../../shared/middlewares/auth.middleware';
+import { profanityFilter } from '../../shared/middlewares/profanityFilter';
 
 export const ordersRouter = Router();
 
@@ -193,7 +194,7 @@ ordersRouter.get('/', async (req, res, next) => {
  * POST /api/v1/orders
  * Cria um novo pedido no Caixa com baixa automática de estoque e vínculo ao Cliente e Vendedor
  */
-ordersRouter.post('/', async (req, res, next) => {
+ordersRouter.post('/', profanityFilter('customerName', 'notes'), async (req, res, next) => {
   try {
     const { tenantId, userId } = req.auth!;
     const body = createPosOrderSchema.parse(req.body);

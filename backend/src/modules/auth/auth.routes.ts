@@ -1,15 +1,18 @@
 import { CookieOptions, Router } from 'express';
 import { z } from 'zod';
-import { query } from '../../config/database';
+import { query, withTenantTransaction } from '../../config/database';
 import { env } from '../../config/env';
 import { AppError } from '../../shared/errors/AppError';
-import { requireAuth } from '../../shared/middlewares/auth.middleware';
+import { requireAuth, requireRole } from '../../shared/middlewares/auth.middleware';
+import { profanityFilter } from '../../shared/middlewares/profanityFilter';
 import {
   authRateLimiter,
   sandboxCreationLimiter,
 } from '../../shared/middlewares/rateLimiter';
 import {
   processStoreLogo,
+  getOwnedUpload,
+  OwnedUpload,
   removeCustomUploadIfExists,
 } from '../../shared/utils/imageUpload';
 import { authService } from './auth.service';
@@ -155,6 +158,7 @@ authRouter.post('/demo-login', authRateLimiter, async (req, res, next) => {
 authRouter.post(
   '/sandbox-register',
   sandboxCreationLimiter,
+  profanityFilter('storeName', 'ownerName', 'address'),
   async (req, res, next) => {
     try {
       const body = sandboxRegisterSchema.parse(req.body);
@@ -391,32 +395,35 @@ authRouter.get('/store-profile', requireAuth, async (req, res, next) => {
  * PUT /api/v1/auth/store-profile
  * Atualiza o cadastro do perfil do lojista (Nome Fantasia, Razão Social, CNPJ, IE, Endereço, Telefone e Logo)
  */
-authRouter.put('/store-profile', requireAuth, async (req, res, next) => {
+authRouter.put('/store-profile', requireAuth, requireRole('OWNER', 'ADMIN'), profanityFilter('name', 'legalName', 'address'), async (req, res, next) => {
+  let createdUpload: OwnedUpload | null = null;
   try {
     const { tenantId } = req.auth!;
     const body = updateStoreProfileSchema.parse(req.body);
 
-    const currentRes = await query<{ logo_url: string | null }>(
-      `SELECT logo_url FROM tenants WHERE id = $1 LIMIT 1`,
-      [tenantId]
-    );
-    const currentLogo = currentRes.rows[0]?.logo_url ?? null;
+    const result = await withTenantTransaction(tenantId, async client => {
+      const actor = await client.query<{ role: string }>('SELECT role FROM users WHERE id = $1 AND tenant_id = $2 AND active = TRUE FOR UPDATE', [req.auth!.userId, tenantId]);
+      if (!actor.rows[0] || !['OWNER', 'ADMIN'].includes(actor.rows[0].role)) throw new AppError('Permissão insuficiente.', 403, 'FORBIDDEN');
+      const currentRes = await client.query<{ logo_url: string | null }>(
+        `SELECT logo_url FROM tenants WHERE id = $1 LIMIT 1`,
+        [tenantId]
+      );
+      const currentLogo = currentRes.rows[0]?.logo_url ?? null;
 
-    let finalLogoUrl = currentLogo;
-    if (body.logoInput !== undefined) {
-      if (body.logoInput === null || body.logoInput.trim() === '') {
-        await removeCustomUploadIfExists(currentLogo);
-        finalLogoUrl = null;
-      } else if (body.logoInput !== currentLogo) {
-        finalLogoUrl = await processStoreLogo(body.logoInput, tenantId);
-        if (currentLogo && currentLogo !== finalLogoUrl) {
-          await removeCustomUploadIfExists(currentLogo);
+      const oldUpload = await getOwnedUpload(currentLogo, tenantId, client);
+      let finalLogoUrl = currentLogo;
+      if (body.logoInput !== undefined) {
+        if (body.logoInput === null || body.logoInput.trim() === '') {
+          finalLogoUrl = null;
+        } else if (body.logoInput !== currentLogo) {
+          const processed = await processStoreLogo(body.logoInput, tenantId, client);
+          createdUpload = processed.createdUpload;
+          finalLogoUrl = processed.imageUrl;
         }
       }
-    }
 
-    const updated = await query(
-      `UPDATE tenants
+      const updated = await client.query(
+        `UPDATE tenants
        SET name = $1,
            legal_name = $2,
            document = $3,
@@ -442,21 +449,25 @@ authRouter.put('/store-profile', requireAuth, async (req, res, next) => {
          is_sandbox AS "isSandbox",
          max_products AS "maxProducts",
          expires_at AS "expiresAt"`,
-      [
-        body.name.trim(),
-        body.legalName?.trim() || null,
-        body.document.trim(),
-        body.stateRegistration?.trim() || null,
-        body.email?.trim() || null,
-        body.phone?.trim() || null,
-        body.address?.trim() || null,
-        finalLogoUrl,
-        tenantId,
-      ]
-    );
+        [
+          body.name.trim(),
+          body.legalName?.trim() || null,
+          body.document.trim(),
+          body.stateRegistration?.trim() || null,
+          body.email?.trim() || null,
+          body.phone?.trim() || null,
+          body.address?.trim() || null,
+          finalLogoUrl,
+          tenantId,
+        ]
+      );
 
-    res.json(updated.rows[0]);
+      return { profile: updated.rows[0], oldUpload: finalLogoUrl !== currentLogo ? oldUpload : null };
+    });
+    await removeCustomUploadIfExists(result.oldUpload);
+    res.json(result.profile);
   } catch (error) {
+    await removeCustomUploadIfExists(createdUpload);
     next(error);
   }
 });

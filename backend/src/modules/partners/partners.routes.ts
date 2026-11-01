@@ -2,13 +2,33 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
-import { query } from '../../config/database';
+import { query, withTenantTransaction } from '../../config/database';
 import { AppError } from '../../shared/errors/AppError';
-import { requireAuth } from '../../shared/middlewares/auth.middleware';
+import { requireAuth, requireRole } from '../../shared/middlewares/auth.middleware';
+import { profanityFilter } from '../../shared/middlewares/profanityFilter';
 
 export const partnersRouter = Router();
 
 partnersRouter.use(requireAuth);
+partnersRouter.use(profanityFilter('name', 'notes', 'address', 'jobTitle'));
+
+async function authorizeEmployeeChange(client: import('pg').PoolClient, tenantId: string, actorId: string, targetId?: string, nextRole?: string): Promise<void> {
+  const actors = await client.query<{ role: string }>('SELECT role FROM users WHERE id = $1 AND tenant_id = $2 AND active = TRUE FOR UPDATE', [actorId, tenantId]);
+  const actor = actors.rows[0];
+  if (!actor || !['OWNER', 'ADMIN'].includes(actor.role)) throw new AppError('Permissão insuficiente.', 403, 'FORBIDDEN');
+  let target: { role: string } | undefined;
+  if (targetId) {
+    const targets = await client.query<{ role: string }>('SELECT role FROM users WHERE id = $1 AND tenant_id = $2 AND active = TRUE FOR UPDATE', [targetId, tenantId]);
+    target = targets.rows[0];
+    if (!target) throw new AppError('Funcionário não encontrado.', 404, 'EMPLOYEE_NOT_FOUND');
+  }
+  if (actor.role === 'ADMIN' && ((nextRole && nextRole !== 'STAFF') || (target && target.role !== 'STAFF'))) throw new AppError('Administradores gerenciam somente funcionários STAFF.', 403, 'FORBIDDEN');
+  if (targetId === actorId && (!nextRole || nextRole !== actor.role)) throw new AppError('Não é permitido alterar o próprio cargo ou desativar a própria conta.', 403, 'SELF_ROLE_CHANGE');
+  if (target?.role === 'OWNER' && nextRole !== 'OWNER') {
+    const owners = await client.query(`SELECT id FROM users WHERE tenant_id = $1 AND role = 'OWNER' AND active = TRUE`, [tenantId]);
+    if ((owners.rowCount ?? 0) <= 1) throw new AppError('A loja precisa manter um proprietário ativo.', 409, 'LAST_OWNER');
+  }
+}
 
 const customerSchema = z.object({
   name: z.string().min(2, 'Informe o nome do cliente').max(120),
@@ -401,7 +421,7 @@ partnersRouter.get('/employees', async (req, res, next) => {
  * POST /api/v1/partners/employees
  * Cadastra um novo funcionário / vendedor na loja
  */
-partnersRouter.post('/employees', async (req, res, next) => {
+partnersRouter.post('/employees', requireRole('OWNER', 'ADMIN'), async (req, res, next) => {
   try {
     const { tenantId } = req.auth!;
     const body = employeeSchema.parse(req.body);
@@ -416,8 +436,10 @@ partnersRouter.post('/employees', async (req, res, next) => {
       10
     );
 
-    const result = await query(
-      `INSERT INTO users (tenant_id, name, email, phone, document, address, job_title, password_hash, role)
+    const result = await withTenantTransaction(tenantId, async client => {
+      await authorizeEmployeeChange(client, tenantId, req.auth!.userId, undefined, body.role);
+      return client.query(
+        `INSERT INTO users (tenant_id, name, email, phone, document, address, job_title, password_hash, role)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING
          id,
@@ -429,18 +451,19 @@ partnersRouter.post('/employees', async (req, res, next) => {
          job_title AS "jobTitle",
          role,
          created_at AS "createdAt"`,
-      [
-        tenantId,
-        body.name.trim(),
-        generatedEmail,
-        body.phone || null,
-        body.document || null,
-        body.address?.trim() || null,
-        body.jobTitle.trim(),
-        defaultPasswordHash,
-        body.role,
-      ]
-    );
+        [
+          tenantId,
+          body.name.trim(),
+          generatedEmail,
+          body.phone || null,
+          body.document || null,
+          body.address?.trim() || null,
+          body.jobTitle.trim(),
+          defaultPasswordHash,
+          body.role,
+        ]
+      );
+    });
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -452,14 +475,16 @@ partnersRouter.post('/employees', async (req, res, next) => {
  * PUT /api/v1/partners/employees/:id
  * Atualiza dados de um funcionário da loja
  */
-partnersRouter.put('/employees/:id', async (req, res, next) => {
+partnersRouter.put('/employees/:id', requireRole('OWNER', 'ADMIN'), async (req, res, next) => {
   try {
     const { tenantId } = req.auth!;
-    const employeeId = req.params.id;
+    const employeeId = z.string().uuid().parse(req.params.id);
     const body = employeeSchema.parse(req.body);
 
-    const result = await query(
-      `UPDATE users
+    const result = await withTenantTransaction(tenantId, async client => {
+      await authorizeEmployeeChange(client, tenantId, req.auth!.userId, employeeId, body.role);
+      return client.query(
+        `UPDATE users
        SET name = $1,
            phone = $2,
            document = $3,
@@ -478,18 +503,19 @@ partnersRouter.put('/employees/:id', async (req, res, next) => {
          address,
          job_title AS "jobTitle",
          role`,
-      [
-        body.name.trim(),
-        body.phone || null,
-        body.document || null,
-        body.address?.trim() || null,
-        body.jobTitle.trim(),
-        body.role,
-        body.email?.trim() || null,
-        employeeId,
-        tenantId,
-      ]
-    );
+        [
+          body.name.trim(),
+          body.phone || null,
+          body.document || null,
+          body.address?.trim() || null,
+          body.jobTitle.trim(),
+          body.role,
+          body.email?.trim() || null,
+          employeeId,
+          tenantId,
+        ]
+      );
+    });
 
     if (!result.rows[0]) {
       throw new AppError('Funcionário não encontrado.', 404, 'EMPLOYEE_NOT_FOUND');
@@ -505,33 +531,14 @@ partnersRouter.put('/employees/:id', async (req, res, next) => {
  * DELETE /api/v1/partners/employees/:id
  * Desativa/remove um funcionário (impedindo excluir o último usuário ativo da loja)
  */
-partnersRouter.delete('/employees/:id', async (req, res, next) => {
+partnersRouter.delete('/employees/:id', requireRole('OWNER', 'ADMIN'), async (req, res, next) => {
   try {
-    const { tenantId } = req.auth!;
-    const employeeId = req.params.id;
-
-    const countRes = await query<{ count: string }>(
-      `SELECT COUNT(*) AS count FROM users WHERE tenant_id = $1 AND active = TRUE`,
-      [tenantId]
-    );
-
-    if (Number(countRes.rows[0]?.count ?? 0) <= 1) {
-      throw new AppError(
-        'A loja precisa manter pelo menos 1 funcionário/responsável ativo.',
-        400,
-        'CANNOT_DELETE_LAST_EMPLOYEE'
-      );
-    }
-
-    await query(
-      `UPDATE users SET active = FALSE, updated_at = NOW() WHERE id = $1 AND tenant_id = $2`,
-      [employeeId, tenantId]
-    );
-
+    const { tenantId, userId } = req.auth!;
+    await withTenantTransaction(tenantId, async client => {
+      await authorizeEmployeeChange(client, tenantId, userId, z.string().uuid().parse(req.params.id));
+      await client.query('UPDATE users SET active = FALSE, updated_at = NOW() WHERE id = $1 AND tenant_id = $2', [req.params.id, tenantId]);
+      await client.query('UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL', [req.params.id, tenantId]);
+    });
     res.status(204).send();
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { next(error); }
 });
-
-
