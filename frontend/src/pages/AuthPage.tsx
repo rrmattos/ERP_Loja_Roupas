@@ -5,7 +5,6 @@ import {
   MapPin,
   Phone,
   Shirt,
-  ShoppingBag,
   Sparkles,
   Store,
 } from 'lucide-react';

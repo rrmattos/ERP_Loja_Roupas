@@ -112,10 +112,10 @@ export async function apiRequest<T>(
   return data as T;
 }
 
-export const MAX_IMAGE_UPLOAD_BYTES = 3 * 1024 * 1024; // Limite máximo de 3 MB
+export const MAX_IMAGE_UPLOAD_BYTES = 2 * 1024 * 1024; // Limite máximo de 2 MB
 
 /**
- * Valida o tamanho máximo de 3 MB, redimensiona com suavização alta e comprime qualquer imagem
+ * Valida o tamanho máximo de 2 MB, redimensiona com suavização alta e comprime qualquer imagem
  * (PNG, JPG, JPEG, WebP) para o formato leve WebP mantendo ótima nitidez e o menor tamanho possível (~15KB a 45KB).
  */
 export async function compressImageToWebP(
@@ -125,7 +125,7 @@ export async function compressImageToWebP(
   if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
     const sizeMb = (file.size / (1024 * 1024)).toFixed(2).replace('.', ',');
     throw new Error(
-      `A imagem selecionada possui ${sizeMb} MB e ultrapassa o limite máximo permitido de 3 MB. Escolha uma imagem menor.`
+      `A imagem selecionada possui ${sizeMb} MB e ultrapassa o limite máximo permitido de 2 MB. Escolha uma imagem menor.`
     );
   }
 

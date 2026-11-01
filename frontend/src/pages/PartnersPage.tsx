@@ -27,6 +27,7 @@ import {
   formatCurrencyBRL,
   formatDateTimeBR,
 } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { Customer, Employee, Supplier } from '../types/erp';
 import {
   composeAddressString,
@@ -38,6 +39,9 @@ import {
 } from '../utils/formatters';
 
 export const PartnersPage: React.FC = () => {
+  const { user } = useAuth();
+  const canManageEmployees = user?.role === 'OWNER' || user?.role === 'ADMIN';
+  const canEditEmployee = (employee: Employee) => canManageEmployees && (user?.role === 'OWNER' || employee.role === 'STAFF');
   const [activeTab, setActiveTab] = useState<
     'customers' | 'suppliers' | 'employees'
   >('customers');
@@ -91,6 +95,7 @@ export const PartnersPage: React.FC = () => {
     city: '',
     street: '',
   });
+  const [empRole, setEmpRole] = useState<'OWNER' | 'ADMIN' | 'STAFF'>('STAFF');
   const [empJobTitle, setEmpJobTitle] = useState('Vendedor(a)');
 
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -257,6 +262,8 @@ export const PartnersPage: React.FC = () => {
 
   // --- Funções de Funcionários ---
   const openNewEmployee = () => {
+    if (!canManageEmployees) return;
+    setEmpRole('STAFF');
     setEditingEmployee(null);
     setEmpName('');
     setEmpDocument('');
@@ -268,6 +275,8 @@ export const PartnersPage: React.FC = () => {
   };
 
   const openEditEmployee = (emp: Employee) => {
+    if (!canEditEmployee(emp)) return;
+    setEmpRole(emp.role === 'OWNER' || emp.role === 'ADMIN' ? emp.role : 'STAFF');
     setEditingEmployee(emp);
     setEmpName(emp.name);
     setEmpDocument(formatCpfMask(emp.document || ''));
@@ -290,7 +299,7 @@ export const PartnersPage: React.FC = () => {
         address: composeAddressString(empAddrObj),
         email: empEmail,
         jobTitle: empJobTitle,
-        role: empJobTitle.toLowerCase().includes('gerente') ? 'ADMIN' : 'STAFF',
+        role: empRole,
       };
 
       if (editingEmployee) {
@@ -337,8 +346,8 @@ export const PartnersPage: React.FC = () => {
     activeTab === 'customers'
       ? 'Cadastrar Novo Cliente'
       : activeTab === 'suppliers'
-      ? 'Cadastrar Novo Fornecedor'
-      : 'Cadastrar Novo Funcionário';
+        ? 'Cadastrar Novo Fornecedor'
+        : 'Cadastrar Novo Funcionário';
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -373,8 +382,7 @@ export const PartnersPage: React.FC = () => {
                 setActiveTab('customers');
                 setCurrentPage(1);
               }}
-              className={`px-4 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2 transition cursor-pointer ${
-                activeTab === 'customers'
+              className={`px-4 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2 transition cursor-pointer ${activeTab === 'customers'
                   ? 'bg-indigo-600 text-white shadow'
                   : 'text-slate-400 hover:text-white'
               }`}
@@ -389,8 +397,7 @@ export const PartnersPage: React.FC = () => {
                 setActiveTab('suppliers');
                 setCurrentPage(1);
               }}
-              className={`px-4 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2 transition cursor-pointer ${
-                activeTab === 'suppliers'
+              className={`px-4 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2 transition cursor-pointer ${activeTab === 'suppliers'
                   ? 'bg-indigo-600 text-white shadow'
                   : 'text-slate-400 hover:text-white'
               }`}
@@ -405,8 +412,7 @@ export const PartnersPage: React.FC = () => {
                 setActiveTab('employees');
                 setCurrentPage(1);
               }}
-              className={`px-4 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2 transition cursor-pointer ${
-                activeTab === 'employees'
+              className={`px-4 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2 transition cursor-pointer ${activeTab === 'employees'
                   ? 'bg-indigo-600 text-white shadow'
                   : 'text-slate-400 hover:text-white'
               }`}
@@ -821,6 +827,7 @@ export const PartnersPage: React.FC = () => {
                       <div className="flex items-center gap-2 shrink-0">
                         <button
                           type="button"
+                          disabled={!canEditEmployee(emp)}
                           onClick={() => openEditEmployee(emp)}
                           className="p-2 rounded-lg bg-slate-800 hover:bg-indigo-600 text-indigo-300 hover:text-white transition cursor-pointer"
                           title="Editar funcionário"
@@ -829,6 +836,7 @@ export const PartnersPage: React.FC = () => {
                         </button>
                         <button
                           type="button"
+                          disabled={!canEditEmployee(emp) || emp.id === user?.id}
                           onClick={() => void handleDeleteEmployee(emp)}
                           className="p-2 rounded-lg bg-slate-800 hover:bg-rose-600 text-slate-400 hover:text-white transition cursor-pointer"
                           title="Remover funcionário"
@@ -1161,6 +1169,16 @@ export const PartnersPage: React.FC = () => {
                   </select>
                 </div>
 
+                <label className="block text-sm text-slate-300">
+                  Perfil de acesso
+                  <select className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-700 p-3"
+                    value={empRole} disabled={user?.role !== 'OWNER' || editingEmployee?.id === user?.id}
+                    onChange={e => setEmpRole(e.target.value as 'OWNER' | 'ADMIN' | 'STAFF')}>
+                    <option value="STAFF">Funcionário</option>
+                    {user?.role === 'OWNER' && <option value="ADMIN">Administrador</option>}
+                    {user?.role === 'OWNER' && <option value="OWNER">Proprietário</option>}
+                  </select>
+                </label>
                 <div>
                   <label className="block text-sm font-medium text-slate-200 mb-1.5">
                     CPF do Funcionário (Obrigatório) *

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Building2,
   Camera,
@@ -15,10 +15,12 @@ import { StructuredAddressFields } from '../components/StructuredAddressFields';
 import {
   ApiError,
   apiRequest,
+  MAX_IMAGE_UPLOAD_BYTES,
   compressImageToWebP,
   getDataUrlSizeKB,
 } from '../services/api';
 import { AuthTenant } from '../types/erp';
+import { moderateImage } from '../utils/imageModerator';
 import {
   composeAddressString,
   formatCpfCnpjMask,
@@ -28,7 +30,8 @@ import {
 } from '../utils/formatters';
 
 export const StoreProfilePage: React.FC = () => {
-  const { tenant, updateTenantState } = useAuth();
+  const { tenant, user, updateTenantState } = useAuth();
+  const canEditProfile = user?.role === 'OWNER' || user?.role === 'ADMIN';
 
   const [name, setName] = useState(tenant?.name || '');
   const [legalName, setLegalName] = useState(tenant?.legalName || '');
@@ -52,6 +55,11 @@ export const StoreProfilePage: React.FC = () => {
 
   const [loading, setLoading] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
+  const [isAnalyzingLogo, setIsAnalyzingLogo] = useState<boolean>(false);
+  const [processingImage, setProcessingImage] = useState(false);
+  const imageVersion = useRef(0);
+  const operationBusy = useRef(false);
+  const selectionInvalid = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -95,84 +103,134 @@ export const StoreProfilePage: React.FC = () => {
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || operationBusy.current) return;
+    const version = ++imageVersion.current;
+    selectionInvalid.current = true;
+    setLogoPreview(null);
+    setProcessingImage(false);
     setError(null);
     setLogoCompressionInfo(null);
+
+    // Validação básica preliminar de tamanho (máx 2MB) e tipos seguros
+    const allowedMime = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowedMime.includes(file.type)) {
+      setError('Formato não suportado. Envie apenas imagens JPEG, PNG ou WebP.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+      setError('A logo selecionada excede o limite máximo permitido de 2 MB.');
+      e.target.value = '';
+      return;
+    }
+
+    setProcessingImage(true);
     try {
       const originalKb = Math.max(1, Math.round(file.size / 1024));
       const compressedDataUrl = await compressImageToWebP(file, 360);
+      if (version !== imageVersion.current) return;
+      selectionInvalid.current = false;
       const finalKb = getDataUrlSizeKB(compressedDataUrl);
       setLogoPreview(compressedDataUrl);
       setLogoCompressionInfo(
         `Imagem otimizada em WebP (${originalKb} KB → ${finalKb} KB)`
       );
     } catch (err) {
+      if (version !== imageVersion.current) return;
       setError(
         err instanceof Error ? err.message : 'Erro ao processar logo da loja.'
       );
+    }
+    finally {
+      if (version === imageVersion.current) setProcessingImage(false);
     }
   };
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-    setFieldErrors({});
-    setSuccessMsg(null);
-
-    const cleanDoc = onlyDigits(document, 14);
-    if (cleanDoc.length !== 11 && cleanDoc.length !== 14) {
-      setFieldErrors({
-        document: [
-          'Informe um CPF (11 números) ou CNPJ (14 números) válido para a loja.',
-        ],
-      });
-      setError(
-        'Informe um CPF (11 números) ou CNPJ (14 números) válido para a loja.'
-      );
-      return;
-    }
-
-    setSaving(true);
-
+    if (operationBusy.current || processingImage) return;
+    if (selectionInvalid.current) { setError('Selecione uma imagem válida antes de salvar.'); return; }
+    operationBusy.current = true;
     try {
-      const composedAddress = composeAddressString(addrObj);
-      const updated = await apiRequest<AuthTenant>('/auth/store-profile', {
-        method: 'PUT',
-        body: JSON.stringify({
-          name,
-          legalName,
-          document: cleanDoc,
-          stateRegistration,
-          email,
-          phone: onlyDigits(phone, 11),
-          address: composedAddress,
-          logoInput: logoPreview,
-        }),
-      });
+      setError(null);
+      setFieldErrors({});
+      setSuccessMsg(null);
 
-      updateTenantState(updated);
-      setLogoPreview(updated.logoUrl || null);
-      setSuccessMsg(
-        'Cadastro da loja atualizado com sucesso! Os dados já estão ativos no sistema e nas Notas Fiscais.'
-      );
-    } catch (err) {
-      if (
-        err instanceof ApiError &&
-        err.fieldErrors &&
-        Object.keys(err.fieldErrors).length > 0
-      ) {
-        setFieldErrors(err.fieldErrors);
-        setError(err.message);
-      } else {
+      const cleanDoc = onlyDigits(document, 14);
+      if (cleanDoc.length !== 11 && cleanDoc.length !== 14) {
+        setFieldErrors({
+          document: [
+            'Informe um CPF (11 números) ou CNPJ (14 números) válido para a loja.',
+          ],
+        });
         setError(
-          err instanceof Error
-            ? err.message
-            : 'Erro ao salvar perfil do lojista.'
+          'Informe um CPF (11 números) ou CNPJ (14 números) válido para a loja.'
         );
+        return;
       }
-    } finally {
-      setSaving(false);
-    }
+
+      // Moderação de segurança client-side da logo se for uma nova imagem base64
+      if (logoPreview && logoPreview.startsWith('data:image/')) {
+        setIsAnalyzingLogo(true);
+        try {
+          const modResult = await moderateImage(logoPreview);
+          if (!modResult.isSafe) {
+            setError(
+              modResult.reason ||
+              'A logo selecionada foi bloqueada pela moderação de segurança por conter conteúdo impróprio.'
+            );
+            return; // Interrompe o envio e mantém o formulário aberto para troca da foto
+          }
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Falha ao analisar a imagem. Tente novamente.');
+          return;
+        } finally {
+          setIsAnalyzingLogo(false);
+        }
+      }
+
+      setSaving(true);
+
+      try {
+        const composedAddress = composeAddressString(addrObj);
+        const updated = await apiRequest<AuthTenant>('/auth/store-profile', {
+          method: 'PUT',
+          body: JSON.stringify({
+            name,
+            legalName,
+            document: cleanDoc,
+            stateRegistration,
+            email,
+            phone: onlyDigits(phone, 11),
+            address: composedAddress,
+            logoInput: logoPreview,
+          }),
+        });
+
+        updateTenantState(updated);
+        setLogoPreview(updated.logoUrl || null);
+        setSuccessMsg(
+          'Cadastro da loja atualizado com sucesso! Os dados já estão ativos no sistema e nas Notas Fiscais.'
+        );
+      } catch (err) {
+        if (
+          err instanceof ApiError &&
+          err.fieldErrors &&
+          Object.keys(err.fieldErrors).length > 0
+        ) {
+          setFieldErrors(err.fieldErrors);
+          setError(err.message);
+        } else {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Erro ao salvar perfil do lojista.'
+          );
+        }
+      } finally {
+        setSaving(false);
+      }
+    } finally { operationBusy.current = false; }
   };
 
   const storeInitial = (name || 'L').trim().charAt(0).toUpperCase();
@@ -210,6 +268,7 @@ export const StoreProfilePage: React.FC = () => {
           onSubmit={handleSaveProfile}
           className="bg-slate-900 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6"
         >
+          <fieldset disabled={!canEditProfile || saving || isAnalyzingLogo} className="contents">
           {/* Seção da Logo / Inicial da Loja */}
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6 pb-6 border-b border-slate-800">
             {logoPreview ? (
@@ -236,7 +295,7 @@ export const StoreProfilePage: React.FC = () => {
               <div className="flex flex-wrap items-center gap-3 pt-1">
                 <label className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm font-semibold text-white flex items-center gap-2 cursor-pointer transition">
                   <Camera className="w-4 h-4" />
-                  <span>Enviar Foto / Logo (Máx. 3 MB)</span>
+                    <span>Enviar Foto / Logo (Máx. 2 MB)</span>
                   <input
                     type="file"
                     accept="image/png,image/jpeg,image/webp"
@@ -245,10 +304,14 @@ export const StoreProfilePage: React.FC = () => {
                   />
                 </label>
 
-                {logoPreview && (
+                  {(logoPreview || selectionInvalid.current || processingImage) && (
                   <button
                     type="button"
                     onClick={() => {
+                        imageVersion.current++;
+                        selectionInvalid.current = false;
+                        setProcessingImage(false);
+                        setError(null);
                       setLogoPreview(null);
                       setLogoCompressionInfo(null);
                     }}
@@ -290,8 +353,7 @@ export const StoreProfilePage: React.FC = () => {
                     setName(e.target.value);
                     clearFieldError('name');
                   }}
-                  className={`w-full px-4 py-2.5 rounded-xl bg-slate-950 border ${
-                    fieldErrors.name
+                    className={`w-full px-4 py-2.5 rounded-xl bg-slate-950 border ${fieldErrors.name
                       ? 'border-rose-500 ring-2 ring-rose-500/40 bg-rose-500/5'
                       : 'border-slate-800'
                   } text-base text-white focus:outline-none focus:border-indigo-500`}
@@ -315,8 +377,7 @@ export const StoreProfilePage: React.FC = () => {
                     setLegalName(e.target.value);
                     clearFieldError('legalName');
                   }}
-                  className={`w-full px-4 py-2.5 rounded-xl bg-slate-950 border ${
-                    fieldErrors.legalName
+                    className={`w-full px-4 py-2.5 rounded-xl bg-slate-950 border ${fieldErrors.legalName
                       ? 'border-rose-500 ring-2 ring-rose-500/40 bg-rose-500/5'
                       : 'border-slate-800'
                   } text-base text-white focus:outline-none focus:border-indigo-500`}
@@ -343,8 +404,7 @@ export const StoreProfilePage: React.FC = () => {
                     setDocument(formatCpfCnpjMask(e.target.value));
                     clearFieldError('document');
                   }}
-                  className={`w-full px-4 py-2.5 rounded-xl bg-slate-950 border ${
-                    fieldErrors.document
+                    className={`w-full px-4 py-2.5 rounded-xl bg-slate-950 border ${fieldErrors.document
                       ? 'border-rose-500 ring-2 ring-rose-500/40 bg-rose-500/5'
                       : 'border-slate-800'
                   } text-base text-white font-mono focus:outline-none focus:border-indigo-500`}
@@ -396,8 +456,7 @@ export const StoreProfilePage: React.FC = () => {
                     setPhone(formatPhoneMask(e.target.value));
                     clearFieldError('phone');
                   }}
-                  className={`w-full px-4 py-2.5 rounded-xl bg-slate-950 border ${
-                    fieldErrors.phone
+                    className={`w-full px-4 py-2.5 rounded-xl bg-slate-950 border ${fieldErrors.phone
                       ? 'border-rose-500 ring-2 ring-rose-500/40 bg-rose-500/5'
                       : 'border-slate-800'
                   } text-base text-white font-mono focus:outline-none focus:border-indigo-500`}
@@ -424,8 +483,7 @@ export const StoreProfilePage: React.FC = () => {
                     setEmail(e.target.value);
                     clearFieldError('email');
                   }}
-                  className={`w-full px-4 py-2.5 rounded-xl bg-slate-950 border ${
-                    fieldErrors.email
+                    className={`w-full px-4 py-2.5 rounded-xl bg-slate-950 border ${fieldErrors.email
                       ? 'border-rose-500 ring-2 ring-rose-500/40 bg-rose-500/5'
                       : 'border-slate-800'
                   } text-base text-white focus:outline-none focus:border-indigo-500`}
@@ -454,15 +512,20 @@ export const StoreProfilePage: React.FC = () => {
           <div className="flex justify-end pt-4 border-t border-slate-800">
             <button
               type="submit"
-              disabled={saving}
+                disabled={!canEditProfile || saving || isAnalyzingLogo || processingImage}
               className="px-6 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-base font-bold text-white flex items-center gap-2 transition shadow-lg shadow-indigo-950/50 cursor-pointer"
             >
               <Save className="w-5 h-5" />
               <span>
-                {saving ? 'Salvando Cadastro...' : 'Salvar Cadastro da Loja'}
+                  {isAnalyzingLogo
+                    ? 'Validando segurança da logo...'
+                    : saving
+                      ? 'Salvando Cadastro...'
+                      : 'Salvar Cadastro da Loja'}
               </span>
             </button>
           </div>
+          </fieldset>
         </form>
       )}
     </div>

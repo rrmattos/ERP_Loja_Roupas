@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Box,
   Edit3,
@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import {
   apiRequest,
+  MAX_IMAGE_UPLOAD_BYTES,
   compressImageToWebP,
   formatCurrencyBRL,
   getDataUrlSizeKB,
@@ -24,6 +25,7 @@ import {
   PaginationBar,
 } from '../components/ListPaginationAndCsv';
 import { formatCpfCnpjMask, onlyDigits } from '../utils/formatters';
+import { moderateImage } from '../utils/imageModerator';
 import {
   Category,
   Color,
@@ -67,6 +69,10 @@ export const ProductsPage: React.FC = () => {
   const [products, setProducts] = useState<Product[]>([]);
   const [meta, setMeta] = useState<MetadataResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [processingImage, setProcessingImage] = useState(false);
+  const imageVersion = useRef(0);
+  const operationBusy = useRef(false);
+  const selectionInvalid = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   // Filtros de Busca na Tela de Produtos
@@ -83,6 +89,7 @@ export const ProductsPage: React.FC = () => {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [showAttributeModal, setShowAttributeModal] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [isAnalyzingImage, setIsAnalyzingImage] = useState<boolean>(false);
 
   // Campos do Formulário de Produto
   const [name, setName] = useState('');
@@ -129,6 +136,11 @@ export const ProductsPage: React.FC = () => {
   }, []);
 
   const openCreateModal = () => {
+    if (operationBusy.current) return;
+    imageVersion.current++;
+    selectionInvalid.current = false;
+    setProcessingImage(false);
+    setError(null);
     setEditingProduct(null);
     setName('');
     setCategoryId(meta?.categories[0]?.id || '');
@@ -156,6 +168,11 @@ export const ProductsPage: React.FC = () => {
   };
 
   const openEditModal = (prod: Product) => {
+    if (operationBusy.current) return;
+    imageVersion.current++;
+    selectionInvalid.current = false;
+    setProcessingImage(false);
+    setError(null);
     setEditingProduct(prod);
     setName(prod.name);
     setCategoryId(prod.categoryId || '');
@@ -182,19 +199,44 @@ export const ProductsPage: React.FC = () => {
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || operationBusy.current) return;
+    const version = ++imageVersion.current;
+    selectionInvalid.current = true;
+    setImageInput('');
+    setProcessingImage(false);
     setError(null);
     setUploadSizeInfo(null);
+
+    // Validação básica preliminar de tamanho (máx 2MB) e tipos seguros
+    const allowedMime = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowedMime.includes(file.type)) {
+      setError('Formato não suportado. Envie apenas imagens JPEG, PNG ou WebP.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+      setError('A foto selecionada excede o limite máximo permitido de 2 MB.');
+      e.target.value = '';
+      return;
+    }
+
+    setProcessingImage(true);
     try {
       const originalKb = Math.max(1, Math.round(file.size / 1024));
       const compressedDataUrl = await compressImageToWebP(file, 600);
+      if (version !== imageVersion.current) return;
+      selectionInvalid.current = false;
       const finalKb = getDataUrlSizeKB(compressedDataUrl);
       setImageInput(compressedDataUrl);
       setUploadSizeInfo(
         `Foto comprimida em WebP otimizado (${originalKb} KB → ${finalKb} KB)`
       );
     } catch (err) {
+      if (version !== imageVersion.current) return;
       setError(err instanceof Error ? err.message : 'Falha ao carregar foto.');
+    }
+    finally {
+      if (version === imageVersion.current) setProcessingImage(false);
     }
   };
 
@@ -218,53 +260,79 @@ export const ProductsPage: React.FC = () => {
 
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-    setSubmitting(true);
+    if (operationBusy.current || processingImage) return;
+    if (selectionInvalid.current) { setError('Selecione uma imagem válida antes de salvar.'); return; }
+    operationBusy.current = true;
     try {
-      if (editingProduct) {
-        await apiRequest(`/products/${editingProduct.id}`, {
-          method: 'PUT',
-          body: JSON.stringify({
-            name,
-            categoryId: categoryId || null,
-            supplierId: supplierId || null,
-            description,
-            basePrice: Number(basePrice),
-            costPrice: Number(costPrice),
-            imageInput,
-            active: true,
-            existingVariants: existingVariants.map((ev) => ({
-              id: ev.id,
-              sku: ev.sku,
-              minStockAlert: ev.minStockAlert,
-            })),
-            newVariants: variants,
-          }),
-        });
-      } else {
-        await apiRequest('/products', {
-          method: 'POST',
-          body: JSON.stringify({
-            name,
-            categoryId: categoryId || null,
-            supplierId: supplierId || null,
-            description,
-            basePrice: Number(basePrice),
-            costPrice: Number(costPrice),
-            imageInput,
-            variants,
-          }),
-        });
+      setError(null);
+
+      // Validação de Moderação de Imagem Client-Side (executada SOMENTE no submit em uploads customizados)
+      if (imageInput && imageInput.startsWith('data:image/')) {
+        setIsAnalyzingImage(true);
+        try {
+          const modResult = await moderateImage(imageInput);
+          if (!modResult.isSafe) {
+            setError(
+              modResult.reason ||
+              'A imagem selecionada foi bloqueada pela moderação de segurança por conter conteúdo impróprio.'
+            );
+            return; // Interrompe o envio e mantém o formulário aberto para troca da foto
+          }
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Falha ao analisar a imagem. Tente novamente.');
+          return;
+        } finally {
+          setIsAnalyzingImage(false);
+        }
       }
 
-      setShowProductModal(false);
-      setEditingProduct(null);
-      await loadAll();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro ao salvar produto.');
-    } finally {
-      setSubmitting(false);
-    }
+      setSubmitting(true);
+      try {
+        if (editingProduct) {
+          await apiRequest(`/products/${editingProduct.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              name,
+              categoryId: categoryId || null,
+              supplierId: supplierId || null,
+              description,
+              basePrice: Number(basePrice),
+              costPrice: Number(costPrice),
+              imageInput,
+              active: true,
+              existingVariants: existingVariants.map((ev) => ({
+                id: ev.id,
+                sku: ev.sku,
+                minStockAlert: ev.minStockAlert,
+              })),
+              newVariants: variants,
+            }),
+          });
+        } else {
+          await apiRequest('/products', {
+            method: 'POST',
+            body: JSON.stringify({
+              name,
+              categoryId: categoryId || null,
+              supplierId: supplierId || null,
+              description,
+              basePrice: Number(basePrice),
+              costPrice: Number(costPrice),
+              imageInput,
+              variants,
+            }),
+          });
+        }
+
+        setShowProductModal(false);
+        setEditingProduct(null);
+        await loadAll();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Erro ao salvar produto.');
+      } finally {
+        setSubmitting(false);
+      }
+    } finally { operationBusy.current = false; }
   };
 
   const handleDeleteProduct = async (product: Product) => {
@@ -424,6 +492,11 @@ export const ProductsPage: React.FC = () => {
           </button>
         </div>
       )}
+
+      <button type="button" disabled title="Integração Unity em desenvolvimento"
+        className="px-4 py-2 rounded-xl bg-slate-800 text-slate-400 cursor-not-allowed">
+        Testar na Unity — em breve
+      </button>
 
       {/* Barra de Filtros de Produtos (Por Nome, Código da Etiqueta, Tipo de Roupa e Fornecedor) */}
       <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
@@ -700,8 +773,7 @@ export const ProductsPage: React.FC = () => {
                         return (
                           <div
                             key={v.id}
-                            className={`p-3.5 rounded-xl border text-sm flex items-center justify-between ${
-                              isZeroStock
+                              className={`p-3.5 rounded-xl border text-sm flex items-center justify-between ${isZeroStock
                                 ? 'bg-rose-500/10 border-rose-500/40'
                                 : v.isLowStock
                                 ? 'bg-amber-500/5 border-amber-500/30'
@@ -726,8 +798,7 @@ export const ProductsPage: React.FC = () => {
 
                             <div className="text-right shrink-0 ml-2">
                               <div
-                                className={`text-base font-bold ${
-                                  isZeroStock
+                                  className={`text-base font-bold ${isZeroStock
                                     ? 'text-rose-400'
                                     : v.isLowStock
                                     ? 'text-amber-400'
@@ -793,6 +864,7 @@ export const ProductsPage: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveProduct} className="space-y-5 mt-5">
+              <fieldset disabled={submitting || isAnalyzingImage} className="contents">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="sm:col-span-2">
                   <label className="block text-sm font-medium text-slate-200 mb-1.5">
@@ -898,7 +970,7 @@ export const ProductsPage: React.FC = () => {
                   </span>
 
                   <label className="px-4 py-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 text-sm font-semibold cursor-pointer transition">
-                    <span>Enviar Foto do Computador (Máx. 3 MB)</span>
+                      <span>Enviar Foto do Computador (Máx. 2 MB)</span>
                     <input
                       type="file"
                       accept="image/png,image/jpeg,image/webp"
@@ -922,11 +994,14 @@ export const ProductsPage: React.FC = () => {
                         key={preset.id}
                         type="button"
                         onClick={() => {
+                            imageVersion.current++;
+                            selectionInvalid.current = false;
+                            setProcessingImage(false);
+                            setError(null);
                           setImageInput(preset.url);
                           setUploadSizeInfo(null);
                         }}
-                        className={`p-3 rounded-xl border text-center transition cursor-pointer ${
-                          selected
+                          className={`p-3 rounded-xl border text-center transition cursor-pointer ${selected
                             ? 'border-indigo-500 bg-indigo-500/15'
                             : 'border-slate-800 bg-slate-900 hover:border-slate-700'
                         }`}
@@ -1156,16 +1231,19 @@ export const ProductsPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting}
+                    disabled={submitting || isAnalyzingImage || processingImage}
                   className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-sm font-semibold text-white cursor-pointer"
                 >
-                  {submitting
+                    {isAnalyzingImage
+                      ? 'Validando segurança da foto...'
+                      : submitting
                     ? 'Salvando...'
                     : editingProduct
                     ? 'Salvar Alterações'
                     : 'Salvar Produto'}
                 </button>
               </div>
+              </fieldset>
             </form>
           </div>
         </div>
