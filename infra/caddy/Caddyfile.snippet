@@ -23,9 +23,9 @@ erp.rafaelrmattos.com {
         -Server
     }
 
-    # Limite de tamanho de upload no proxy (1 MB máx para proteger disco/RAM da VPS)
+    # 2 MiB binários + Base64 + metadados, alinhado ao Express (3 MiB)
     request_body {
-        max_size 1MB
+        max_size 3145728
     }
 
     # Roteamento da API e Uploads para o container Node.js

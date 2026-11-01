@@ -32,3 +32,13 @@ Thumbs.db
 .vscode/
 .idea/
 
+
+# Dumps e backups locais (scripts SQL de inicializa??o continuam versionados)
+*.dump
+*.backup
+*.sql
+!database/init/*.sql
+*.sql.gz
+*.sql.zip
+/dumps/
+/backups/

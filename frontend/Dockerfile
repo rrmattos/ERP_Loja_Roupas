@@ -1,14 +1,14 @@
 # =============================================================================
 # Etapa 1: Build do Front-end React + TypeScript (Vite)
 # =============================================================================
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 
 ARG VITE_API_URL=/api/v1
 ENV VITE_API_URL=$VITE_API_URL
 
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY . .
 RUN npm run build
