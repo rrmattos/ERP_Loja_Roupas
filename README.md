@@ -7,21 +7,23 @@ Sistema **ERP de Loja de Roupas** com arquitetura **Multi-Tenant (`tenant_id`)**
 ## 🏗️ Arquitetura e Diferenciais Técnicos
 
 - **Arquitetura 3-Tier Containerizada (`erp_db` + `erp_api` + `erp_web`):**
-  - **Banco de Dados (`erp_db`):** PostgreSQL 16 Alpine em rede Docker interna isolada (`internal: true`, sem expor a porta `5432` para a internet) e ajustado para baixo consumo de RAM (~35 MB).
+  - **Banco de Dados (`erp_db`):** PostgreSQL 16 Alpine em rede Docker interna isolada (`internal: true`, sem expor a porta `5432` para a internet) com limite de 160 MiB; o consumo real depende da carga.
   - **Back-end (`erp_api`):** Node.js 24 Alpine + TypeScript + Express + Zod, rodando com usuário não-root (`USER node`).
-  - **Front-end (`erp_web`):** React 18 + TypeScript + Vite + Tailwind CSS, servido via `nginxinc/nginx-unprivileged:alpine` (~5 MB de RAM).
+  - **Front-end (`erp_web`):** React 18 + TypeScript + Vite + Tailwind CSS, servido via `nginxinc/nginx-unprivileged:alpine`, com limite de 48 MiB.
 - **Multi-Tenancy & Modo Showcase de Portfólio (`APP_MODE`):**
   - **`APP_MODE=portfolio_sandbox` (Homologação / Vitrine do Portfólio):**
     1. **Acesso 1-Clique na Loja Demonstração:** Visitantes e recrutadores entram sem precisar preencher formulários.
     2. **Criação de Loja Teste Isolada (Sandbox):** O visitante cria sua própria loja (`tenant`) que já nasce com **2 produtos pré-cadastrados**, grade de tamanhos/cores e saldo inicial via *stored function* SQL (`seed_tenant_catalog`).
-    3. **Faxina Automática a cada 24h:** Agendador interno remove lojas sandbox vencidas, exclui imagens enviadas do disco (`/uploads`) e restaura a Loja Demonstração para o padrão de fábrica.
-  - **`APP_MODE=commercial_production` (Produção Comercial):** Desativa automaticamente os acessos públicos de demonstração/sandbox e o reset de 24h, operando como um ERP corporativo fechado.
+    3. **Expiração das sandboxes:** por padrão, 24 horas após a criação (`SANDBOX_TTL_HOURS=24`). A limpeza verifica lojas vencidas a cada hora e na inicialização da API, excluindo registros vinculados e uploads sem outras referências. A loja oficial não expira.
+    4. **Reset da demonstração pública:** executado a cada `SANDBOX_TTL_HOURS` horas de execução contínua da API (24 por padrão). Restaura catálogo, estoque, vendas e cadastros comerciais de exemplo e remove a logo customizada. Não recria os usuários nem restaura todos os campos do perfil da loja. O intervalo reinicia quando a API é reiniciada; não é um cron diário à meia-noite.
+    5. **Sessões:** os sete dias correspondem à validade do refresh token, não à duração dos dados de uma loja. Alterar o TTL não recalcula a expiração de sandboxes já criadas.
+  - **`APP_MODE=commercial_production` (Produção Comercial):** Desativa automaticamente os acessos públicos de demonstração/sandbox e o reset de 24h, operando como um ERP corporativo fechado. A limpeza periódica de tokens vencidos/revogados continua ativa.
 - **Segurança em Profundidade (OWASP):**
   - Validação estrita de payloads e variáveis de ambiente com **Zod**.
   - Senhas com hash **bcrypt (cost 12)** + bloqueio temporário de conta após 5 tentativas inválidas (*Account Lockout*).
   - **JWT Access Token (15m)** + **Refresh Token (7d)** com rotação automática em cookie `HttpOnly`, `Secure`, `SameSite=Strict` e hash SHA-256 no banco.
-  - Upload de imagens com **compressão cliente para WebP** (reduzindo fotos de 5 MB para ~45 KB) e **validação binária de Magic Bytes** no servidor.
-  - Logs padronizados (`[SECURITY_AUTH_FAIL]`) prontos para o **Fail2ban** da VPS.
+  - Upload de imagens de até **2 MiB**, com **compressão cliente para WebP**, validação de MIME/assinatura e exclusão segura após persistência. O tamanho final depende da imagem.
+  - Logs padronizados (`[SECURITY_AUTH_FAIL]`) para integração opcional com **Fail2ban**. Instalar o serviço não ativa a jail do ERP: é necessário configurar origem dos logs e ação compatível com a rede Docker.
 
 ---
 
@@ -56,15 +58,43 @@ Acesse no navegador: **`http://localhost:5173`**.
 
 ## 🚀 Como Fazer o Deploy na VPS (Ubuntu 24.04 + Docker + Caddy)
 
-1. Na VPS, clone o repositório e crie o arquivo `.env` na raiz baseado no `.env.example` (definindo senhas fortes para `DB_PASSWORD`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` e `ADMIN_PASSWORD`).
-2. Suba os containers:
+O deploy usa um projeto Compose separado (`-p erp`), preservando os serviços existentes.
+Não é necessário instalar Node.js diretamente na VPS.
+
+1. **Na máquina local**, construa imagens Linux/amd64 e transfira o arquivo para a VPS (exemplo de tag; use a versão desejada):
    ```bash
-   docker compose up -d --build
+   TAG=76f4aa9
+   docker build --platform linux/amd64 -t erp-api:$TAG -f backend/Dockerfile .
+   docker build --platform linux/amd64 -t erp-web:$TAG -f frontend/Dockerfile frontend
+   docker save -o erp-images.tar erp-api:$TAG erp-web:$TAG
+   scp erp-images.tar USUARIO@IP_DA_VPS:/CAMINHO/DO/ERP/
    ```
-3. Adicione o bloco do arquivo [`infra/caddy/Caddyfile.snippet`](./infra/caddy/Caddyfile.snippet) ao `Caddyfile` do seu container `caddy_proxy` e recarregue o Caddy:
+   Esses comandos usam Bash/Git Bash. Salve o arquivo fora da pasta do projeto se o Windows bloquear a gravação. Não versione o `.tar`.
+2. **Na VPS**, clone/atualize o repositório. Configure o `.env` na raiz, com permissão `600`, segredos exclusivos, `NODE_ENV=production`, `APP_MODE=portfolio_sandbox`, `CORS_ORIGIN=https://erp.rafaelrmattos.com` e `CADDY_DOCKER_NETWORK=portfolioweb_app-net` (confirme o nome real da rede do Caddy). Não publique o `.env` nem a saída de `docker compose config` sem `--quiet`.
+3. Carregue as imagens e crie `docker-compose.images.yml`, usando a mesma tag construída:
    ```bash
-   docker exec caddy_proxy caddy reload --config /etc/caddy/Caddyfile
+   docker load -i erp-images.tar
    ```
+   ```yaml
+   services:
+     erp_api:
+       image: erp-api:76f4aa9
+     erp_web:
+       image: erp-web:76f4aa9
+   ```
+   ```bash
+   docker compose -p erp -f docker-compose.yml -f docker-compose.images.yml config --quiet
+   docker compose -p erp -f docker-compose.yml -f docker-compose.images.yml up -d --no-build
+   ```
+4. Aponte o registro DNS `A` de `erp` para o IPv4 da VPS. Faça backup do Caddyfile existente e acrescente **somente o bloco do ERP** de [`infra/caddy/Caddyfile.snippet`](./infra/caddy/Caddyfile.snippet), preservando o site Blazor. Valide antes de recarregar:
+   ```bash
+   docker exec caddy_proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+   docker exec caddy_proxy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+   curl -fsS https://erp.rafaelrmattos.com/api/v1/health
+   ```
+5. Verifique demo, criação de sandbox, uploads e exportações no navegador. Monitore `docker stats --no-stream`, RAM, swap e disco junto dos serviços Blazor/MySQL. O Fail2ban existente pode continuar protegendo SSH; a proteção específica do ERP é configurada separadamente.
+
+Os dados e uploads ficam em volumes persistentes. Mantenha backups e o mesmo nome de projeto (`-p erp`) nas atualizações. Não use `docker compose down -v` em produção: essa opção remove os volumes.
 
 ---
 
