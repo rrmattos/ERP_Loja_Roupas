@@ -1,4 +1,4 @@
-# Vértice Fashion ERP (SaaS Multi-Tenant)
+# Sistema de Gestão ERP (SaaS Multi-Tenant)
 
 Sistema **ERP de Loja de Roupas** com arquitetura **Multi-Tenant (`tenant_id`)**, controle de grade de variações (**Tamanhos × Cores × SKU**), livro-razão de estoque transacional (**ACID / `SELECT ... FOR UPDATE`**) e API RESTful preparada para integração futura com e-commerce gamificado em ambiente 3d **(Unity 3D)**.
 
